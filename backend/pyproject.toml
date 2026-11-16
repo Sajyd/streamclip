@@ -1,0 +1,79 @@
+[project]
+name = "streamclip-backend"
+version = "0.1.0"
+description = "STREAMCLIP AI - control plane API, workers and ingestion services"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.163,<1",
+    "uvicorn[standard]>=0.54,<1",
+    "sqlalchemy[asyncio]>=2.1,<2.2",
+    "psycopg[binary,pool]>=3.3,<4",
+    "alembic>=1.20,<2",
+    "stripe>=17,<18",
+    "boto3>=1.44,<2",
+    "pydantic>=2.14,<3",
+    "pydantic-settings>=2.16,<3",
+    "email-validator>=2.4,<3",
+    "argon2-cffi>=25.1",
+    "pyjwt>=2.15,<3",
+    "structlog>=26.1",
+    "aiosmtplib>=5.1,<6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2,<10",
+    "pytest-asyncio>=1.5,<2",
+    "pytest-cov>=6",
+    "httpx>=0.28,<1",
+    "aiosmtpd>=1.4.6,<2",
+    "ruff>=0.17",
+    "mypy>=2.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = ["error::sqlalchemy.exc.SAWarning"]
+
+[tool.coverage.run]
+source = ["app"]
+# SQLAlchemy's asyncio layer runs driver calls in greenlets.
+concurrency = ["greenlet", "thread"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "C4", "SIM", "RUF", "PT", "DTZ", "T20"]
+ignore = [
+    "B008",   # FastAPI Depends() in argument defaults is the documented pattern
+    "RUF012", # SQLAlchemy __table_args__ are intentionally class-level mutables
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: compact multi-part assertions and SQL built from fixed table names are deliberate.
+"tests/**" = ["S101", "S105", "S106", "S311", "S608", "PT012", "PT018"]
+"app/cli.py" = ["T20"]
+# Enum member names and the "token_type" field contain the word, not a secret.
+"app/models/enums.py" = ["S105"]
+"app/schemas/api.py" = ["S105"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "main.py"]
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["migrations/versions"]
+
+[[tool.mypy.overrides]]
+module = ["aiosmtpd.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true

@@ -1,0 +1,90 @@
+"""ORM models. Importing this package registers every table on `Base.metadata`."""
+
+from app.models.analysis import (
+    AnalysisJob,
+    AnalysisWindow,
+    DetectedEvent,
+    HighlightCandidate,
+    HighlightCandidateEvent,
+    Speaker,
+)
+from app.models.base import APP_ROLE, Base
+from app.models.billing import (
+    BillingEvent,
+    CostRecord,
+    Plan,
+    Subscription,
+    UsagePeriod,
+    UsageRecord,
+)
+from app.models.clips import (
+    Caption,
+    Clip,
+    ClipFeedbackEvent,
+    ClipVersion,
+    SocialAccount,
+    SocialPublication,
+    StorageAsset,
+)
+from app.models.identity import (
+    AuthSession,
+    AuthToken,
+    Membership,
+    Organization,
+    OrganizationSettings,
+    RefreshToken,
+    User,
+    UserSettings,
+)
+from app.models.media import IngestNode, MediaSegment, StreamConnection, StreamKey, StreamSession
+from app.models.system import (
+    AuditLog,
+    Notification,
+    PlatformSetting,
+    RateLimitCounter,
+    Task,
+    WorkerNode,
+)
+
+__all__ = [
+    "APP_ROLE",
+    "AnalysisJob",
+    "AnalysisWindow",
+    "AuditLog",
+    "AuthSession",
+    "AuthToken",
+    "Base",
+    "BillingEvent",
+    "Caption",
+    "Clip",
+    "ClipFeedbackEvent",
+    "ClipVersion",
+    "CostRecord",
+    "DetectedEvent",
+    "HighlightCandidate",
+    "HighlightCandidateEvent",
+    "IngestNode",
+    "MediaSegment",
+    "Membership",
+    "Notification",
+    "Organization",
+    "OrganizationSettings",
+    "Plan",
+    "PlatformSetting",
+    "RateLimitCounter",
+    "RefreshToken",
+    "SocialAccount",
+    "SocialPublication",
+    "Speaker",
+    "StorageAsset",
+    "StreamConnection",
+    "StreamKey",
+    "StreamSession",
+    "Subscription",
+    "Task",
+    "UsagePeriod",
+    "UsageRecord",
+    "User",
+    "UserSettings",
+    "WorkerNode",
+]

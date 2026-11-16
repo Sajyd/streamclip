@@ -1,0 +1,66 @@
+# Local stack with Docker. Prefer `scripts/dev.sh` when Docker is unavailable.
+#
+#   docker compose up --build
+#   docker compose exec api python -m app.cli migrate
+#
+# Secrets come from `.env` (never committed). The restricted S3 identity lives
+# in `.localdev/aws_runtime.env` and is merged below when present.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "55432:5432"
+    volumes:
+      - streamclip_pg:/var/lib/postgresql/data
+      - ./infrastructure/docker/init-postgres.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    env_file:
+      - path: .env
+        required: false
+      - path: .localdev/aws_runtime.env
+        required: false
+      - path: .localdev/dev.env
+        required: false
+    environment:
+      ENVIRONMENT: local
+      PUBLIC_APP_URL: http://localhost:3000
+      DATABASE_URL: postgresql://streamclip_owner:streamclip@postgres:5432/streamclip_dev
+      EMAIL_TRANSPORT: console
+      S3_REGION: ${S3_REGION:-${AWS_REGION:-eu-north-1}}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+      args:
+        PUBLIC_APP_URL: http://localhost:3000
+    environment:
+      API_INTERNAL_URL: http://api:8000
+      PUBLIC_APP_URL: http://localhost:3000
+      BFF_SHARED_SECRET: ${BFF_SHARED_SECRET}
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  streamclip_pg:

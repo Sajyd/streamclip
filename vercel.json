@@ -1,0 +1,51 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["lhr1"],
+  "services": {
+    "web": {
+      "root": "frontend",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "api",
+          "format": "url",
+          "env": "API_INTERNAL_URL"
+        }
+      ]
+    },
+    "api": {
+      "root": "backend",
+      "entrypoint": "main:app",
+      "functions": {
+        "main.py": {
+          "maxDuration": 60,
+          "includeFiles": "{migrations/**,alembic.ini}"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/v1/billing/webhooks/(.*)",
+      "destination": { "service": "api" }
+    },
+    {
+      "source": "/api/v1/internal/(.*)",
+      "destination": { "service": "api" }
+    },
+    {
+      "source": "/api/v1/(healthz|readyz)",
+      "destination": { "service": "api" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "web" }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/v1/internal/cron/maintenance",
+      "schedule": "0 4 * * *"
+    }
+  ]
+}
