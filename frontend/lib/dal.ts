@@ -14,6 +14,8 @@ import type {
   Meta,
   NotificationList,
   PlanCatalog,
+  StreamKey,
+  StreamSession,
 } from "@/types/api";
 
 /**
@@ -98,6 +100,21 @@ export async function getAuthSessions(token: string, next: string): Promise<Auth
 
 export async function getDataExports(token: string, next: string): Promise<DataExport[]> {
   return unwrap(await api<{ items: DataExport[] }>("/account/exports", { token }), next).items;
+}
+
+export async function getIngestKey(token: string, next: string): Promise<StreamKey | null> {
+  const result = await api<StreamKey>("/ingest/key", { token });
+  if (result.ok) {
+    return result.data;
+  }
+  if (result.error.status === 404) {
+    return null;
+  }
+  return unwrap(result, next);
+}
+
+export async function getIngestSessions(token: string, next: string): Promise<StreamSession[]> {
+  return unwrap(await api<{ items: StreamSession[] }>("/ingest/sessions", { token }), next).items;
 }
 
 export type PublicInfo = { catalog: PlanCatalog; meta: Meta };

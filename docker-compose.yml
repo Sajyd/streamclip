@@ -62,5 +62,21 @@ services:
     depends_on:
       - api
 
+  # Optional data-plane ingest (requires Docker). Not started by default:
+  #   docker compose --profile ingest up mediamtx
+  mediamtx:
+    profiles: ["ingest"]
+    image: bluenviron/mediamtx:1.11.3
+    volumes:
+      - ./infrastructure/docker/mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      MTX_AUTHHTTPADDRESS: http://api:8000/api/v1/ingest/hooks/auth
+      INGEST_HOOK_SECRET: ${INGEST_HOOK_SECRET:-}
+    ports:
+      - "1935:1935"
+      - "8890:8890/udp"
+    depends_on:
+      - api
+
 volumes:
   streamclip_pg:

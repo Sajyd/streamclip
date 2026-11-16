@@ -8,6 +8,8 @@ export type Capabilities = {
   billing_test_mode: boolean;
   storage: boolean;
   live_processing: boolean;
+  ingest_keys: boolean;
+  ingest_online: boolean;
 };
 
 export type Meta = {
@@ -128,3 +130,30 @@ export type AdminUser = {
 };
 
 export type AdminUserList = { items: AdminUser[]; next_cursor: string | null };
+
+export type StreamKey = {
+  public_id: string;
+  key_hint: string;
+  label: string;
+  status: string;
+  created_at: string;
+  last_used_at: string | null;
+  rtmps_url: string | null;
+  srt_url: string | null;
+  stream_key: string | null;
+  ingest_online: boolean;
+};
+
+export type StreamSession = {
+  id: string;
+  status: string;
+  end_reason: string | null;
+  protocol: string | null;
+  title: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  media_duration_ms: number;
+  processed_ms: number;
+  clips_count: number;
+  created_at: string;
+};

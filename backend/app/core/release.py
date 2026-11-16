@@ -1,6 +1,9 @@
 """What this release actually ships."""
 
-# The ingest and clip-generation pipeline (development phases 2 to 5) is not
-# part of this release. Two things follow from this single switch: no client
-# presents live processing as available, and no real payment is taken for it.
+# Live media processing and clip generation (phases 3-5) are not open yet.
+# Real Stripe payments stay blocked until this flips to True.
 LIVE_PROCESSING_AVAILABLE = False
+
+# Control plane for STREAMCLIP ingest keys (create / rotate / revoke, MediaMTX
+# auth hooks). Can ship before MediaMTX accepts real RTMPS traffic.
+INGEST_KEYS_AVAILABLE = True

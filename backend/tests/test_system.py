@@ -83,8 +83,10 @@ async def test_meta_describes_real_capabilities(client: httpx.AsyncClient) -> No
         "billing": True,
         "billing_test_mode": True,
         "storage": True,
-        # The ingest pipeline is not shipped: never advertised as available.
+        # Clip generation is not shipped yet; ingest keys are available.
         "live_processing": False,
+        "ingest_keys": True,
+        "ingest_online": False,
     }
 
 

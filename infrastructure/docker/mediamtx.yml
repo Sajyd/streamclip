@@ -1,0 +1,45 @@
+# MediaMTX configuration for STREAMCLIP AI local / self-hosted ingest.
+# The control plane authenticates publishers via HTTP hooks.
+#
+# Required env (compose):
+#   MTX_AUTHHTTPADDRESS  → https://…/api/v1/ingest/hooks/auth
+#   INGEST_HOOK_SECRET   → same value as the API's INGEST_HOOK_SECRET
+
+logLevel: info
+logDestinations: [stdout]
+
+rtmp: yes
+rtmpEncryption: "no"
+rtmpAddress: :1935
+
+# TLS for RTMPS is terminated by a reverse proxy or provided via serverKey/serverCert.
+rtmps: no
+rtmpsAddress: :1936
+
+srt: yes
+srtAddress: :8890
+
+webrtc: no
+hls: no
+rtsp: no
+
+pathDefaults:
+  # Only authenticated publishers may write; nobody reads from here publicly.
+  source: publisher
+  record: no
+  # Auth webhook (MediaMTX v1.9+). Headers carry our shared secret.
+  overridePublisher: yes
+
+authMethod: http
+# Overridden at runtime by the compose service (MTX_AUTHHTTPADDRESS).
+authHTTPAddress: http://api:8000/api/v1/ingest/hooks/auth
+authHTTPExclude: []
+# MediaMTX ≥ 1.9. Injected by compose via env substitution when supported;
+# otherwise set the same secret in a local override file.
+authHTTPAdditionalHeaders:
+  X-Streamclip-Ingest-Secret: "${INGEST_HOOK_SECRET}"
+
+paths:
+  # OBS publishes to rtmps://host/live/{public_id} with password = stream secret.
+  "live/~path":
+    source: publisher

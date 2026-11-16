@@ -47,5 +47,12 @@ Le front Next.js appelle l'API uniquement côté serveur, avec en plus :
 | POST | `/admin/users/{id}/suspend` | admin | Suspendre |
 | POST | `/admin/users/{id}/reactivate` | admin | Réactiver |
 | GET | `/internal/cron/maintenance` | `CRON_SECRET` | Ménage quotidien |
+| GET | `/ingest/key` | oui | Clé d'ingestion active |
+| POST | `/ingest/key` | admin org | Créer / remplacer la clé (secret affiché une fois) |
+| POST | `/ingest/key/rotate` | admin org | Régénérer la clé |
+| DELETE | `/ingest/key` | admin org | Révoquer |
+| GET | `/ingest/sessions` | oui | Lives récents |
+| POST | `/ingest/hooks/auth` | `INGEST_HOOK_SECRET` | Auth MediaMTX (publish) |
+| POST | `/ingest/hooks/event` | `INGEST_HOOK_SECRET` | Fin de live / ticks de traitement |
 
 La source de vérité des schémas est `backend/app/schemas/api.py`.

@@ -30,6 +30,10 @@
       "destination": { "service": "api" }
     },
     {
+      "source": "/api/v1/ingest/hooks/(.*)",
+      "destination": { "service": "api" }
+    },
+    {
       "source": "/api/v1/internal/(.*)",
       "destination": { "service": "api" }
     },

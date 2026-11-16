@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     s3_endpoint_url: str | None = None
     data_export_ttl_days: int = 7
 
+    # --- Ingest (MediaMTX data plane) ---------------------------------------
+    # Public hostname publishers connect to (without scheme), e.g. ingest.example.com.
+    ingest_public_host: str | None = None
+    # Optional full URL templates; `{public_id}` / `{secret}` are substituted.
+    ingest_rtmps_url: str | None = None
+    ingest_srt_url: str | None = None
+    # Shared secret for MediaMTX → API auth/event webhooks.
+    ingest_hook_secret: SecretStr | None = None
+
     # --- Operations ---------------------------------------------------------
     cron_secret: SecretStr | None = None
     max_request_body_bytes: int = 1_048_576
@@ -108,6 +117,10 @@ class Settings(BaseSettings):
             and self.s3_access_key_id is not None
             and self.s3_secret_access_key is not None
         )
+
+    @property
+    def ingest_online(self) -> bool:
+        return bool((self.ingest_public_host or "").strip())
 
     def jwt_keyring(self) -> dict[str, str]:
         keyring: dict[str, str] = {}

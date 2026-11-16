@@ -122,6 +122,11 @@ class Capabilities(ApiModel):
     # Live ingestion and clip generation. False until that pipeline is
     # deployed: the web application then says so instead of offering it.
     live_processing: bool
+    # Control plane for STREAMCLIP ingest keys (OBS destinations). Independent
+    # of live_processing: keys can be issued before MediaMTX accepts traffic.
+    ingest_keys: bool
+    # True when a public ingest hostname is configured (publish URLs ready).
+    ingest_online: bool
 
 
 class MetaResponse(ApiModel):
@@ -261,3 +266,63 @@ class AdminUserList(ApiModel):
 
 class SuspendRequest(ApiModel):
     reason: Annotated[str, Field(min_length=3, max_length=500)]
+
+
+# --- Ingest ------------------------------------------------------------------
+
+
+class StreamKeyOut(ApiModel):
+    public_id: str
+    key_hint: str
+    label: str
+    status: str
+    created_at: datetime
+    last_used_at: datetime | None
+    rtmps_url: str | None
+    srt_url: str | None
+    # Clear OBS stream key — only present right after create/rotate.
+    stream_key: str | None = None
+    ingest_online: bool
+
+
+class StreamKeyIssueRequest(ApiModel):
+    label: Annotated[str, Field(default="", max_length=80)] = ""
+
+
+class StreamSessionOut(ApiModel):
+    id: uuid.UUID
+    status: str
+    end_reason: str | None
+    protocol: str | None
+    title: str | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    media_duration_ms: int
+    processed_ms: int
+    clips_count: int
+    created_at: datetime
+
+
+class StreamSessionList(ApiModel):
+    items: list[StreamSessionOut]
+
+
+class IngestAuthHookRequest(ApiModel):
+    """MediaMTX auth webhook payload (subset we rely on)."""
+
+    action: Annotated[str, Field(max_length=32)] = "publish"
+    path: Annotated[str, Field(max_length=255)] = ""
+    protocol: Annotated[str, Field(max_length=32)] = "rtmp"
+    ip: Annotated[str | None, Field(max_length=64)] = None
+    user: Annotated[str | None, Field(max_length=128)] = None
+    password: Annotated[str | None, Field(max_length=256)] = None
+    query: Annotated[str | None, Field(max_length=512)] = None
+
+
+class IngestEventHookRequest(ApiModel):
+    event: Annotated[str, Field(max_length=64)]
+    path: Annotated[str, Field(max_length=255)] = ""
+    protocol: Annotated[str, Field(max_length=32)] = "rtmp"
+    ip: Annotated[str | None, Field(max_length=64)] = None
+    # Optional processing tick from the ingest agent (milliseconds).
+    processed_ms: int | None = Field(default=None, ge=1, le=3_600_000)

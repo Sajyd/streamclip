@@ -4,10 +4,17 @@ import { Suspense } from "react";
 import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
 import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
+import { IngestPanel } from "@/components/app/ingest-panel";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
 import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
-import { getBillingOverview, getNotifications, requireSession } from "@/lib/dal";
+import {
+  getBillingOverview,
+  getIngestKey,
+  getIngestSessions,
+  getNotifications,
+  requireSession,
+} from "@/lib/dal";
 import { cx, formatDateTime } from "@/lib/format";
 import type { Notification } from "@/types/api";
 
@@ -24,11 +31,14 @@ const SEVERITY_DOT: Record<Notification["severity"], string> = {
 
 async function Dashboard() {
   const { token, me } = await requireSession(PATH);
-  const [overview, notifications] = await Promise.all([
+  const { user, organization, capabilities } = me;
+  const canManage = organization.role === "owner" || organization.role === "admin";
+  const [overview, notifications, ingestKey, ingestSessions] = await Promise.all([
     getBillingOverview(token, PATH),
     getNotifications(token, PATH),
+    capabilities.ingest_keys ? getIngestKey(token, PATH) : Promise.resolve(null),
+    capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
   ]);
-  const { user, capabilities } = me;
   const timeZone = user.timezone;
 
   return (
@@ -71,7 +81,16 @@ async function Dashboard() {
         </div>
       </div>
 
-      {capabilities.live_processing ? null : (
+      {capabilities.ingest_keys ? (
+        <IngestPanel
+          canManage={canManage}
+          ingestOnline={capabilities.ingest_online}
+          liveProcessing={capabilities.live_processing}
+          existingKey={ingestKey}
+          sessions={ingestSessions}
+          timeZone={timeZone}
+        />
+      ) : (
         <Card>
           <CardTitle>Lives et clips</CardTitle>
           <CardDescription>

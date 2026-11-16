@@ -31,6 +31,8 @@ def capabilities(ctx: AppContext) -> Capabilities:
         billing_test_mode=ctx.stripe is not None and not ctx.stripe.livemode,
         storage=ctx.storage is not None,
         live_processing=release.LIVE_PROCESSING_AVAILABLE,
+        ingest_keys=release.INGEST_KEYS_AVAILABLE,
+        ingest_online=ctx.settings.ingest_online,
     )
 
 
