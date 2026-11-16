@@ -24,7 +24,7 @@ export async function issueIngestKeyAction(
   if (!result.ok) {
     return failure(result.error, { label });
   }
-  refresh();
+  // Do not refresh here: a remount would drop the one-time clear secret.
   return {
     ...success(
       result.data.stream_key
@@ -50,7 +50,7 @@ export async function rotateIngestKeyAction(
   if (!result.ok) {
     return failure(result.error, { label });
   }
-  refresh();
+  // Do not refresh here: a remount would drop the one-time clear secret.
   return {
     ...success("Nouvelle clé émise. L'ancienne ne fonctionne plus. Copiez la clé maintenant."),
     key: result.data,
