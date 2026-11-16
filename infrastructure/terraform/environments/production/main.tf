@@ -72,3 +72,16 @@ module "runtime_identity" {
   name       = "streamclip-${local.environment}-runtime"
   bucket_arn = module.storage.bucket_arn
 }
+
+module "ingest_node" {
+  count  = var.enable_ingest_node ? 1 : 0
+  source = "../../modules/ingest_node"
+
+  name               = "streamclip-${local.environment}-ingest"
+  bucket_arn         = module.storage.bucket_arn
+  api_auth_url       = var.ingest_api_auth_url
+  ingest_hook_secret = var.ingest_hook_secret
+  instance_type      = "t4g.small"
+  use_spot           = true
+  allocate_eip       = true
+}

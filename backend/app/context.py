@@ -10,6 +10,7 @@ from app.security.rate_limit import RateLimiter
 
 if TYPE_CHECKING:
     from app.billing.gateway import StripeGateway
+    from app.services.asr import AsrProvider
     from app.storage.s3 import ObjectStorage
 
 
@@ -21,10 +22,12 @@ class AppContext:
     mailer: Mailer
     stripe: "StripeGateway | None"
     storage: "ObjectStorage | None"
+    asr: "AsrProvider"
 
 
 def build_context(settings: Settings, *, use_null_pool: bool = False) -> AppContext:
     from app.billing.gateway import StripeGateway
+    from app.services.asr import build_asr
     from app.storage.s3 import ObjectStorage
 
     db = Database(settings, use_null_pool=use_null_pool)
@@ -35,4 +38,5 @@ def build_context(settings: Settings, *, use_null_pool: bool = False) -> AppCont
         mailer=build_mailer(settings),
         stripe=StripeGateway(settings) if settings.billing_enabled else None,
         storage=ObjectStorage(settings) if settings.storage_enabled else None,
+        asr=build_asr(settings),
     )

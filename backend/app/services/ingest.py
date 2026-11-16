@@ -343,6 +343,15 @@ async def record_processed_tick(
         media_start_ms=previous,
         media_end_ms=previous + processed_ms,
     )
+    # Open analysis windows for each completed ~5 min slice of processed media.
+    from app.services import analysis as analysis_service
+
+    await analysis_service.schedule_windows_for_progress(
+        session,
+        stream,
+        previous_processed_ms=previous,
+        current_processed_ms=stream.processed_ms,
+    )
     if snapshot.exhausted and stream.status in OPEN_SESSION_STATUSES:
         await close_session(session, stream, reason=StreamEndReason.QUOTA_EXHAUSTED)
     return snapshot

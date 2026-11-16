@@ -100,6 +100,137 @@ async def delete_account(ctx: AppContext, task: ClaimedTask) -> None:
     )
 
 
+@task_handler("analysis.transcribe")
+async def transcribe_window(ctx: AppContext, task: ClaimedTask) -> None:
+    """Run ASR for one analysis window. Skips honestly when audio is missing."""
+    import base64
+    from datetime import UTC
+
+    from app.models.analysis import AnalysisJob, AnalysisWindow
+    from app.models.clips import StorageAsset
+    from app.models.enums import AssetKind, AssetStatus, JobStatus, WindowStatus
+    from app.services import analysis as analysis_service
+    from app.services.asr import details_to_json_bytes, transcript_to_details
+    from app.storage.s3 import tenant_key
+
+    job_id = _uuid(task, "job_id")
+    window_id = _uuid(task, "window_id")
+    now = datetime.now(UTC)
+
+    async with ctx.db.system_tx() as session:
+        job = await session.get(AnalysisJob, job_id)
+        window = await session.get(AnalysisWindow, window_id)
+        if job is None or window is None:
+            raise PermanentTaskError("Analysis job or window missing")
+        if job.status in (
+            JobStatus.SUCCEEDED,
+            JobStatus.SKIPPED,
+            JobStatus.CANCELED,
+        ):
+            return
+        job.status = JobStatus.RUNNING
+        job.started_at = now
+        window.status = WindowStatus.ANALYZING
+        await session.flush()
+
+        audio: bytes | None = None
+        content_type = "audio/wav"
+        # Test / agent injection: optional base64 audio on the job details.
+        injected = (job.details or {}).get("audio_b64")
+        if isinstance(injected, str) and injected:
+            try:
+                audio = base64.b64decode(injected, validate=True)
+            except Exception as exc:
+                await analysis_service.mark_job_failed(
+                    session,
+                    job,
+                    window,
+                    code="invalid_injected_audio",
+                    message=str(exc),
+                )
+                return
+            content_type = str((job.details or {}).get("audio_content_type") or content_type)
+        else:
+            _unused, storage_key = await analysis_service.load_audio_for_window(session, window)
+            if storage_key and ctx.storage is not None:
+                try:
+                    audio = await ctx.storage.get_object(storage_key)
+                    content_type = "audio/mpeg"
+                except Exception as exc:
+                    log.warning("asr_segment_read_failed", key=storage_key, error=str(exc))
+                    audio = None
+
+        if not audio:
+            await analysis_service.mark_job_skipped(
+                session,
+                job,
+                window,
+                code="no_media_segment",
+                message=(
+                    "Aucun segment audio n'est encore disponible pour cette fenêtre. "
+                    "La transcription sera possible quand le buffer d'ingestion écrira les médias."
+                ),
+            )
+            return
+
+    transcript = await ctx.asr.transcribe(audio, content_type=content_type)
+    details = transcript_to_details(transcript)
+
+    async with ctx.db.system_tx() as session:
+        job = await session.get_one(AnalysisJob, job_id)
+        window = await session.get_one(AnalysisWindow, window_id)
+        if transcript.skipped:
+            await analysis_service.mark_job_skipped(
+                session,
+                job,
+                window,
+                code=transcript.skip_reason or "asr_skipped",
+                message=(
+                    "ASR n'a produit aucune transcription (fournisseur inactif ou sans résultat)."
+                ),
+            )
+            job.provider = transcript.provider
+            job.model = transcript.model
+            job.details = details
+            await session.flush()
+            return
+
+        if ctx.storage is not None:
+            key = tenant_key(
+                job.organization_id,
+                "transcripts",
+                str(window.stream_session_id),
+                f"{window.sequence}.json",
+            )
+            body = details_to_json_bytes(details)
+            await ctx.storage.put_object(
+                key, body, content_type="application/json", short_retention=True
+            )
+            session.add(
+                StorageAsset(
+                    organization_id=job.organization_id,
+                    kind=AssetKind.TRANSCRIPT,
+                    status=AssetStatus.AVAILABLE,
+                    bucket=ctx.storage.bucket,
+                    key=key,
+                    content_type="application/json",
+                    size_bytes=len(body),
+                    details={"window_id": str(window.id), "job_id": str(job.id)},
+                )
+            )
+
+        await analysis_service.mark_job_succeeded(
+            session,
+            job,
+            window,
+            provider=transcript.provider,
+            model=transcript.model,
+            audio_ms=transcript.audio_ms,
+            cost_usd=transcript.cost_usd,
+            details=details,
+        )
+
+
 @task_handler("maintenance.cleanup")
 async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
     """Housekeeping: drop expired secrets and counters, enforce retention."""

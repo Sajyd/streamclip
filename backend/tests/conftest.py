@@ -110,6 +110,8 @@ def settings(database_url: str) -> Settings:
 @pytest.fixture(scope="session")
 async def ctx(settings: Settings) -> AsyncIterator[AppContext]:
     db = Database(settings)
+    from app.services.asr import NoneAsr
+
     context = AppContext(
         settings=settings,
         db=db,
@@ -117,6 +119,7 @@ async def ctx(settings: Settings) -> AsyncIterator[AppContext]:
         mailer=CapturingMailer(),
         stripe=FakeStripeGateway(settings),
         storage=FakeStorage(),  # type: ignore[arg-type]
+        asr=NoneAsr(),
     )
     async with db.system_tx() as session:
         # Link the paid plans to (fake) Stripe products, as stripe-sync would.

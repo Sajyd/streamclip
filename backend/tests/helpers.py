@@ -77,6 +77,12 @@ class FakeStorage:
         if short_retention:
             self.short_retention.add(key)
 
+    async def get_object(self, key: str) -> bytes:
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise FileNotFoundError(key) from exc
+
     async def delete_object(self, key: str) -> None:
         self.objects.pop(key, None)
         self.short_retention.discard(key)

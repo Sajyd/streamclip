@@ -237,6 +237,7 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
     public_id = _public_id_from_path(body.path)
     if public_id is None:
         return Message(message="ignored")
+    queued_transcription = False
     async with ctx.db.system_tx() as session:
         key = await ingest_service.find_key_by_public_id(session, public_id)
         if key is None:
@@ -271,6 +272,19 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             await ingest_service.record_processed_tick(
                 session, stream, processed_ms=body.processed_ms
             )
+            queued_transcription = True
         elif event in ("lost", "signal_lost"):
             await ingest_service.close_session(session, stream, reason=StreamEndReason.SIGNAL_LOST)
+    if queued_transcription:
+        # Serverless: run newly queued analysis tasks before the response returns.
+        from app.tasks.queue import run_due_tasks
+
+        await run_due_tasks(
+            ctx,
+            worker=f"ingest-{getattr(request.state, 'request_id', 'hook')}",
+            queues=["analysis"],
+            kinds=["analysis.transcribe"],
+            max_tasks=4,
+            time_budget_seconds=20.0,
+        )
     return Message(message="ok")

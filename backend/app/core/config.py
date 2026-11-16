@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     # Shared secret for MediaMTX → API auth/event webhooks.
     ingest_hook_secret: SecretStr | None = None
 
+    # --- ASR / transcription ------------------------------------------------
+    # none | console | openai_compatible (Groq/OpenAI-compatible HTTP).
+    asr_provider: str = "none"
+    asr_api_key: SecretStr | None = None
+    asr_base_url: str = "https://api.groq.com/openai/v1"
+    asr_model: str = "whisper-large-v3-turbo"
+
     # --- Operations ---------------------------------------------------------
     cron_secret: SecretStr | None = None
     max_request_body_bytes: int = 1_048_576

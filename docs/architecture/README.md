@@ -88,8 +88,8 @@ ouverture commerciale.
 | Phase | Statut |
 | --- | --- |
 | 1 Fondations / auth / multi-tenant / billing / UI | **Livrée** |
-| 2 Ingestion RTMPS/SRT | **Plan de contrôle livré** (clés + hooks) ; MediaMTX/EC2 à déployer |
-| 3 Audio / transcription | À faire |
+| 2 Ingestion RTMPS/SRT | **Plan de contrôle livré** ; module EC2 MediaMTX prêt (off par défaut) |
+| 3 Audio / transcription | **Fondations livrées** (fenêtres + jobs ; skip sans média) |
 | 4 Intelligence vidéo | À faire |
 | 5 Génération de clips | À faire |
 | 6 Dashboard lives/clips | Partiel (shell honnête) |

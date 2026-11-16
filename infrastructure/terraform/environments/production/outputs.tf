@@ -17,3 +17,13 @@ output "runtime_user_arn" {
   description = "ARN of the runtime IAM user."
   value       = module.runtime_identity.user_arn
 }
+
+output "ingest_public_ip" {
+  description = "Public IP of the MediaMTX node (null when disabled)."
+  value       = try(module.ingest_node[0].public_ip, null)
+}
+
+output "ingest_public_host" {
+  description = "Hostname/IP to set as INGEST_PUBLIC_HOST."
+  value       = try(module.ingest_node[0].public_ip, null)
+}
