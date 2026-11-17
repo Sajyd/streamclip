@@ -337,6 +337,9 @@ export type AdminLiveDetail = AdminLive & {
     instance_id: string | null;
     launch_error: string | null;
     launched_at: string | null;
+    analysis_url?: string | null;
+    analysis_health_url?: string | null;
+    analysis_status_url?: string | null;
   } | null;
   pipeline_log: Array<{
     id: string;
