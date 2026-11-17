@@ -8,7 +8,7 @@ import type { StreamKey, StreamSession } from "@/types/api";
 export function IngestPanel({
   canManage,
   ingestOnline,
-  apiUrl,
+  rtmpUrl,
   liveProcessing,
   existingKey,
   sessions,
@@ -16,7 +16,7 @@ export function IngestPanel({
 }: {
   canManage: boolean;
   ingestOnline: boolean;
-  apiUrl: string | null;
+  rtmpUrl: string | null;
   liveProcessing: boolean;
   existingKey: StreamKey | null;
   sessions: StreamSession[];
@@ -30,12 +30,13 @@ export function IngestPanel({
             <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Ingestion</p>
             <CardTitle className="mt-2">Connexion OBS / Streamlabs</CardTitle>
             <CardDescription>
-              Une URL API unique : avec votre clé, elle démarre votre instance spot dédiée et
-              renvoie l&apos;adresse RTMP. Vos clés Twitch, YouTube ou Kick ne sont jamais demandées.
+              Une URL RTMP unique + votre clé secrète. Au live, le backend relaie le flux vers
+              votre instance EC2 dédiée pour l&apos;analyse. Vos clés Twitch / YouTube / Kick ne
+              sont jamais demandées.
             </CardDescription>
           </div>
           <Badge tone={ingestOnline ? "ok" : "warn"}>
-            {ingestOnline ? "Instances d'ingestion prêtes" : "Instances en déploiement"}
+            {ingestOnline ? "Serveur RTMP en ligne" : "Serveur RTMP hors ligne"}
           </Badge>
         </div>
 
@@ -50,7 +51,7 @@ export function IngestPanel({
           <StreamKeyManager
             canManage={canManage}
             ingestOnline={ingestOnline}
-            apiUrl={apiUrl}
+            rtmpUrl={rtmpUrl}
             existingKey={existingKey}
             timeZone={timeZone}
           />

@@ -7,7 +7,7 @@ from typing import Annotated
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Query, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 
 from app.api.deps import Ctx, CurrentPrincipal, Meta, OptionalPrincipal
@@ -23,6 +23,7 @@ from app.models.media import StreamKey, StreamSession
 from app.schemas.api import (
     IngestAuthHookRequest,
     IngestEventHookRequest,
+    IngestRelayTargetOut,
     IngestResolveOut,
     IngestResolveRequest,
     Message,
@@ -33,6 +34,7 @@ from app.schemas.api import (
 )
 from app.services import ingest as ingest_service
 from app.services import ingest_nodes
+from app.services.rtmp_resolve_page import render_resolve_page
 
 router = APIRouter(tags=["ingest"])
 # Memorable public URL mounted at app root: GET /rtmp?key=…
@@ -69,8 +71,7 @@ def _key_out(
     instance_rtmp_url: str | None = None,
 ) -> StreamKeyOut:
     # Clear secret only right after create/rotate (show-once).
-    # ingest_api_url is always the same resolve endpoint; rtmps_url is the
-    # dedicated spot's RTMP address once that instance is READY.
+    # rtmps_url = stable edge URL for OBS (same for every org).
     endpoints = ingest_service.endpoints_for(
         ctx.settings,
         public_id=key.public_id,
@@ -195,11 +196,25 @@ async def issue_ingest_key(
 
 @public_router.get("/rtmp", response_model=None)
 async def rtmp_resolve(
+    request: Request,
     ctx: Ctx,
     key: Annotated[str, Query(min_length=16, max_length=256, description="Stream key")],
+    redirect: Annotated[bool, Query()] = False,
 ) -> Response:
-    """Memorable resolve: secret → quota → start unique spot → 302 RTMP."""
-    return await _resolve(ctx, stream_key=key, organization_id=None, redirect=True)
+    """Memorable resolve: secret → quota → start unique spot → RTMP dédié.
+
+    Browsers get an HTML page (auto-refresh while starting). OBS cannot use
+    this HTTP URL as Server — after ready, copy the shown rtmp:// host.
+    Pass redirect=1 for a 302 to rtmp:// when ready.
+    """
+    wants_html = "text/html" in (request.headers.get("accept") or "").lower()
+    return await _resolve(
+        ctx,
+        stream_key=key,
+        organization_id=None,
+        redirect=redirect,
+        html=wants_html and not redirect,
+    )
 
 
 @router.post("/ingest/resolve", response_model=None)
@@ -237,8 +252,10 @@ async def _resolve(
     stream_key: str | None,
     organization_id,
     redirect: bool,
+    html: bool = False,
 ) -> Response:
     _require_ingest_keys()
+    clear_key = stream_key
     async with ctx.db.system_tx() as session:
         if stream_key:
             parsed = ingest_service.parse_obs_key(stream_key)
@@ -275,8 +292,27 @@ async def _resolve(
         public_hostname=result.public_hostname,
         message=result.message,
     )
+    resolve_link = result.ingest_api_url
+    if clear_key:
+        from urllib.parse import quote
+
+        resolve_link = f"{result.ingest_api_url}?key={quote(clear_key, safe='')}"
+
     if redirect and result.status == "ready" and result.rtmp_url:
         return RedirectResponse(url=result.rtmp_url, status_code=status.HTTP_302_FOUND)
+    if html:
+        page = render_resolve_page(
+            status=result.status,
+            message=result.message,
+            rtmp_url=result.rtmp_url if result.status == "ready" else None,
+            stream_key=clear_key,
+            resolve_url=resolve_link,
+            edge_rtmp_url=ctx.settings.edge_rtmp_url,
+        )
+        code = status.HTTP_202_ACCEPTED if result.status == "starting" else status.HTTP_200_OK
+        if result.status == "unavailable":
+            code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return HTMLResponse(status_code=code, content=page)
     code = status.HTTP_202_ACCEPTED if result.status == "starting" else status.HTTP_200_OK
     if result.status == "unavailable":
         code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -327,7 +363,11 @@ async def list_ingest_sessions(principal: CurrentPrincipal, ctx: Ctx) -> StreamS
 
 @router.post("/ingest/hooks/auth")
 async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
-    """MediaMTX calls this before accepting a publisher. 200 = allow, 401 = deny."""
+    """Edge MediaMTX auth: validate stream key + subscription, open session.
+
+    Dedicated spot launch is kicked off asynchronously (see relay-target) so
+    OBS is accepted quickly on the shared edge URL.
+    """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
         # Playback / read is not offered publicly.
@@ -341,7 +381,7 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
         key = await ingest_service.authenticate_publisher(
             session, public_id=public_id, secret=secret
         )
-        # Publisher is live on their dedicated spot — cancel idle shutdown.
+        await ingest_nodes.assert_can_go_live(session, key.organization_id)
         await ingest_nodes.cancel_idle_termination(
             session, organization_id=key.organization_id
         )
@@ -352,7 +392,84 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
         if node is not None and stream.ingest_node_id is None:
             stream.ingest_node_id = node.id
             await session.flush()
+        from app.tasks.queue import enqueue
+
+        await enqueue(
+            session,
+            "ingest.ensure_node",
+            {"organization_id": str(key.organization_id)},
+            queue="ingest",
+            organization_id=key.organization_id,
+            idempotency_key=f"ensure-node:{key.organization_id}",
+        )
+    # Best-effort: start the spot before the edge asks for a relay target.
+    from app.tasks.queue import run_due_tasks
+
+    await run_due_tasks(
+        ctx,
+        worker=f"auth-{getattr(request.state, 'request_id', 'hook')}",
+        queues=["ingest"],
+        kinds=["ingest.ensure_node"],
+        max_tasks=1,
+        time_budget_seconds=45.0,
+    )
     return Response(status_code=200)
+
+
+@router.get("/ingest/hooks/relay-target", response_model=IngestRelayTargetOut)
+async def relay_target(
+    request: Request,
+    ctx: Ctx,
+    path: Annotated[str, Query(min_length=1, max_length=255)],
+) -> IngestRelayTargetOut:
+    """Edge polls this after publisher_ready to learn where to ffmpeg-push."""
+    _require_hook_secret(request, ctx)
+    public_id = _public_id_from_path(path)
+    if public_id is None:
+        return IngestRelayTargetOut(
+            status="unavailable",
+            rtmp_push_url=None,
+            message="Chemin RTMP invalide.",
+        )
+    async with ctx.db.system_tx() as session:
+        key = await ingest_service.find_key_by_public_id(session, public_id)
+        if key is None:
+            return IngestRelayTargetOut(
+                status="unavailable",
+                rtmp_push_url=None,
+                message="Clé inconnue.",
+            )
+        try:
+            await ingest_nodes.assert_can_go_live(session, key.organization_id)
+            result = await ingest_nodes.resolve_for_organization(
+                session, ctx.settings, organization_id=key.organization_id
+            )
+        except PermissionDeniedError as exc:
+            return IngestRelayTargetOut(
+                status="unavailable",
+                rtmp_push_url=None,
+                message=str(exc.message) if hasattr(exc, "message") else "Accès refusé.",
+            )
+    if result.status == "ready" and result.rtmp_url:
+        # Push to the same path the edge received so dedicated auth still works.
+        push = result.rtmp_url.rstrip("/")
+        # result.rtmp_url is rtmp://ip:1935/live — append remainder of path after "live"
+        parts = [p for p in path.strip("/").split("/") if p]
+        if len(parts) >= 2 and parts[0] == "live":
+            suffix = "/".join(parts[1:])
+            push_url = f"{push}/{suffix}"
+        else:
+            push_url = f"{push}/{path.strip('/')}"
+        return IngestRelayTargetOut(
+            status="ready",
+            rtmp_push_url=push_url,
+            message="Relay prêt.",
+        )
+    return IngestRelayTargetOut(
+        status=result.status,
+        rtmp_push_url=None,
+        message=result.message,
+    )
 
 
 @router.post("/ingest/hooks/event", response_model=Message)
@@ -363,6 +480,7 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
     if public_id is None:
         return Message(message="ignored")
     queued_transcription = False
+    queued_segment = False
     async with ctx.db.system_tx() as session:
         key = await ingest_service.find_key_by_public_id(session, public_id)
         if key is None:
@@ -397,6 +515,27 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             await ingest_nodes.schedule_idle_termination(
                 session, organization_id=key.organization_id
             )
+        elif event == "segment" and body.storage_key and body.sequence is not None:
+            processed = body.processed_ms or 300_000
+            await ingest_service.record_processed_tick(
+                session, stream, processed_ms=processed
+            )
+            from app.tasks.queue import enqueue
+
+            await enqueue(
+                session,
+                "analysis.segment",
+                {
+                    "stream_session_id": str(stream.id),
+                    "sequence": body.sequence,
+                    "storage_key": body.storage_key,
+                    "size_bytes": body.size_bytes or 0,
+                },
+                queue="analysis",
+                organization_id=key.organization_id,
+                idempotency_key=f"segment:{stream.id}:{body.sequence}",
+            )
+            queued_segment = True
         elif event in ("processed", "tick") and body.processed_ms:
             await ingest_service.record_processed_tick(
                 session, stream, processed_ms=body.processed_ms
@@ -423,5 +562,16 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             kinds=["analysis.transcribe"],
             max_tasks=4,
             time_budget_seconds=20.0,
+        )
+    if queued_segment:
+        from app.tasks.queue import run_due_tasks
+
+        await run_due_tasks(
+            ctx,
+            worker=f"segment-{getattr(request.state, 'request_id', 'hook')}",
+            queues=["analysis"],
+            kinds=["analysis.segment"],
+            max_tasks=1,
+            time_budget_seconds=55.0,
         )
     return Message(message="ok")

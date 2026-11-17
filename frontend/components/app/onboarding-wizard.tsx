@@ -135,7 +135,7 @@ export function OnboardingWizard({
   displayName,
   canManage,
   ingestOnline,
-  ingestApiUrl,
+  ingestRtmpUrl,
   ingestKey,
   sessions,
   plans,
@@ -146,7 +146,7 @@ export function OnboardingWizard({
   displayName: string | null;
   canManage: boolean;
   ingestOnline: boolean;
-  ingestApiUrl: string | null;
+  ingestRtmpUrl: string | null;
   ingestKey: StreamKey | null;
   sessions: StreamSession[];
   plans: Plan[];
@@ -368,8 +368,8 @@ export function OnboardingWizard({
               : "Installer le plugin Multiple RTMP (OBS)"}
           </CardTitle>
           <CardDescription>
-            Étapes détaillées pour installer la sortie Multiple RTMP, créer votre clé, démarrer
-            l&apos;instance, puis coller serveur + clé dans{" "}
+            Étapes détaillées pour installer la sortie Multiple RTMP, créer votre clé, puis coller
+            le serveur RTMP unique + la clé dans{" "}
             {software === "streamlabs" ? "Streamlabs Desktop" : "OBS Studio"}.
           </CardDescription>
           <div className="mt-6">
@@ -378,7 +378,7 @@ export function OnboardingWizard({
               existingKey={ingestKey}
               canManage={canManage}
               ingestOnline={ingestOnline}
-              apiUrl={ingestApiUrl}
+              rtmpUrl={ingestRtmpUrl}
             />
           </div>
         </Card>

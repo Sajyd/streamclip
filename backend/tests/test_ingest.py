@@ -17,9 +17,11 @@ HOOK_SECRET = "ingest-hook-test-secret-value-32b"
 def _configure_ingest(ctx: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(release, "INGEST_KEYS_AVAILABLE", True)
     ctx.settings.ingest_hook_secret = SecretStr(HOOK_SECRET)
-    # Test env uses FakeSpotLauncher (unique host per org, no shared fallback).
+    ctx.settings.ingest_public_host = "edge.ingest.test"
+    # FakeSpotLauncher for dedicated compute spots behind the edge.
     yield
     ctx.settings.ingest_hook_secret = None
+    ctx.settings.ingest_public_host = None
 
 
 async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> None:
@@ -31,14 +33,14 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert body["status"] == "active"
     assert body["stream_key"].startswith(body["public_id"] + "/")
     assert "sc_live_" in body["stream_key"]
-    assert body["ingest_api_url"].endswith("/rtmp")
+    assert body["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
     assert body["ingest_online"] is True
     clear = body["stream_key"]
 
     again = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert again.status_code == 200
     assert again.json()["stream_key"] is None  # never re-shown
-    assert again.json()["ingest_api_url"].endswith("/rtmp")
+    assert again.json()["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
     assert again.json()["public_id"] == body["public_id"]
 
     rotated = await client.post(f"{API}/ingest/key/rotate", json={}, headers=account.headers)
@@ -52,56 +54,51 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert missing.status_code == 404
 
 
-async def test_rtmp_resolve_starts_unique_spot_and_redirects(
+async def test_relay_target_starts_unique_dedicated_spot(
     client: httpx.AsyncClient,
 ) -> None:
-    """GET /rtmp?key=… → quota OK → unique spot → 302 rtmp://{org-host}/live."""
-    account = await register(client, email="ingest-resolve@example.com")
+    """Edge polls relay-target → unique dedicated host per org for ffmpeg push."""
+    account = await register(client, email="ingest-relay@example.com")
     issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
-    clear = issued["stream_key"]
-    org_hex = None
+    public_id = issued["public_id"]
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
 
-    # Memorable public URL (also available under /api/v1/ingest/resolve).
-    redirected = await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
-    assert redirected.status_code == 302
-    location = redirected.headers["location"]
-    assert location.startswith("rtmp://")
-    assert location.endswith(":1935/live")
-    host = location.removeprefix("rtmp://").split(":")[0]
-    assert host.endswith(".ingest.test")
-    org_hex = host.split(".", 1)[0]
+    assert issued["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
 
-    # Second org must get a different host (no shared fallback).
-    other = await register(client, email="ingest-resolve-b@example.com")
-    other_key = (await client.post(f"{API}/ingest/key", json={}, headers=other.headers)).json()[
-        "stream_key"
-    ]
-    other_redir = await client.get("/rtmp", params={"key": other_key}, follow_redirects=False)
-    assert other_redir.status_code == 302
-    other_host = other_redir.headers["location"].removeprefix("rtmp://").split(":")[0]
-    assert other_host != host
-    assert other_host.split(".", 1)[0] != org_hex
-
-    # Logged-in dashboard resolve returns JSON (no need to re-enter secret).
-    resolved = await client.post(f"{API}/ingest/resolve", json={}, headers=account.headers)
-    assert resolved.status_code == 200
-    body = resolved.json()
+    relay = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": f"live/{public_id}/sc_live_x"},
+        headers=hook,
+    )
+    assert relay.status_code == 200
+    body = relay.json()
     assert body["status"] == "ready"
-    assert body["rtmp_url"] == location
-    assert body["ingest_api_url"].endswith("/rtmp")
+    assert body["rtmp_push_url"].startswith("rtmp://")
+    assert ".ingest.test" in body["rtmp_push_url"]
+    host = body["rtmp_push_url"].removeprefix("rtmp://").split(":")[0]
+
+    other = await register(client, email="ingest-relay-b@example.com")
+    other_id = (await client.post(f"{API}/ingest/key", json={}, headers=other.headers)).json()[
+        "public_id"
+    ]
+    other_relay = (
+        await client.get(
+            f"{API}/ingest/hooks/relay-target",
+            params={"path": f"live/{other_id}/sc_live_y"},
+            headers=hook,
+        )
+    ).json()
+    other_host = other_relay["rtmp_push_url"].removeprefix("rtmp://").split(":")[0]
+    assert other_host != host
 
 
-async def test_rtmp_resolve_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
-    account = await register(client, email="ingest-resolve-quota@example.com")
+async def test_auth_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
+    account = await register(client, email="ingest-auth-quota@example.com")
     issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
     clear = issued["stream_key"]
     public_id, _, secret = clear.partition("/")
     hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
 
-    # Burn the free quota via a live tick, then resolve must refuse.
-    assert (
-        await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
-    ).status_code == 302
     assert (
         await client.post(
             f"{API}/ingest/hooks/auth",
@@ -122,7 +119,16 @@ async def test_rtmp_resolve_rejects_exhausted_quota(client: httpx.AsyncClient) -
         )
     ).status_code == 200
 
-    blocked = await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
+    blocked = await client.post(
+        f"{API}/ingest/hooks/auth",
+        json={
+            "action": "publish",
+            "path": f"live/{public_id}",
+            "protocol": "rtmp",
+            "password": secret,
+        },
+        headers=hook,
+    )
     assert blocked.status_code == 403
     assert blocked.json()["error"]["code"] == "quota_exhausted"
 
@@ -244,5 +250,5 @@ async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True
     assert caps["ingest_online"] is True
-    assert caps["ingest_api_url"].endswith("/rtmp")
+    assert caps["ingest_rtmp_url"] == "rtmp://edge.ingest.test:1935/live"
     assert caps["live_processing"] is False

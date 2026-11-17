@@ -34,6 +34,7 @@ def capabilities(ctx: AppContext) -> Capabilities:
         live_processing=release.LIVE_PROCESSING_AVAILABLE,
         ingest_keys=release.INGEST_KEYS_AVAILABLE,
         ingest_online=ctx.settings.ingest_online,
+        ingest_rtmp_url=ctx.settings.edge_rtmp_url if release.INGEST_KEYS_AVAILABLE else None,
         ingest_api_url=ingest_api_url(ctx.settings) if release.INGEST_KEYS_AVAILABLE else None,
         social_oauth=release.SOCIAL_OAUTH_AVAILABLE,
     )

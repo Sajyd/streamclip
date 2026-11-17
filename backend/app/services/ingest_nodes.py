@@ -1,14 +1,17 @@
-"""Dedicated ingest EC2 nodes (t4g.small spot) per organization.
+"""Dedicated compute EC2 nodes (t4g.small spot) per organization.
 
-Flow:
-  GET /rtmp?key=… → quota check → start unique spot → 302 rtmp://{ip}:1935/live
+OBS always connects to the shared edge RTMP URL. On publish, the API
+authenticates the stream key, ensures this org's dedicated spot is up, and the
+edge relays the live stream to that instance for 5-min analysis.
 
-No shared fallback host. Each org gets its own instance IP or resolve fails.
-When RTMP goes idle, the node is marked for termination after a 5-minute margin.
+When the publisher disconnects, the node is marked for termination after a
+5-minute idle margin.
 """
 
 from __future__ import annotations
 
+import asyncio
+import socket
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,6 +34,15 @@ log = structlog.get_logger(__name__)
 RTMP_PORT = 1935
 ANALYSIS_PORT = 8080
 IDLE_TERMINATE_MARGIN = timedelta(minutes=5)
+
+
+def rtmp_port_open(host: str, *, port: int = RTMP_PORT, timeout: float = 1.5) -> bool:
+    """True when MediaMTX is accepting RTMP on the dedicated host."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 ACTIVE_SUB_STATUSES = frozenset(
     {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE}
 )
@@ -247,6 +259,24 @@ async def resolve_for_organization(
 
     if node.status is IngestNodeStatus.READY and node.public_hostname:
         host = node.public_hostname
+        # MediaMTX may still be installing — keep "starting" until :1935 accepts.
+        # Skip TCP probe for fake/local hosts used in tests.
+        probe = settings.environment not in ("test", "local") or not host.endswith(
+            ".ingest.test"
+        )
+        if probe and not await asyncio.to_thread(rtmp_port_open, host):
+            return ResolveResult(
+                status="starting",
+                ingest_api_url=api,
+                rtmp_url=rtmp_url_for_host(host),
+                analysis_url=analysis_url_for_host(host),
+                public_hostname=host,
+                node_id=node.id,
+                message=(
+                    "Instance allumée — MediaMTX démarre (≈1 min). "
+                    "Le relay edge réessaiera automatiquement."
+                ),
+            )
         return ResolveResult(
             status="ready",
             ingest_api_url=api,
@@ -254,7 +284,7 @@ async def resolve_for_organization(
             analysis_url=analysis_url_for_host(host),
             public_hostname=host,
             node_id=node.id,
-            message="Instance prête — redirection vers votre RTMP dédié.",
+            message="Instance dédiée prête pour le relay.",
         )
     if node.status is IngestNodeStatus.STARTING:
         return ResolveResult(
@@ -262,7 +292,7 @@ async def resolve_for_organization(
             ingest_api_url=api,
             rtmp_url=None,
             analysis_url=None,
-            public_hostname=None,
+            public_hostname=node.public_hostname,
             node_id=node.id,
             message="Démarrage de votre instance spot — réessayez dans quelques secondes.",
         )

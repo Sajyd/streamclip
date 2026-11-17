@@ -225,6 +225,34 @@ async def persist_segment_analysis(
     )
 
 
+async def analyze_uploaded_segment(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    storage: ObjectStorage,
+    stream: StreamSession,
+    sequence: int,
+    storage_key: str,
+    size_bytes: int = 0,
+) -> SegmentResult:
+    """Download a 5-min HD segment already on S3 and run FFmpeg + ASR + Luna."""
+    body = await storage.get_object(storage_key)
+    with tempfile.TemporaryDirectory(prefix="streamclip-seg-") as tmp:
+        video_path = Path(tmp) / "segment.mp4"
+        await asyncio.to_thread(video_path.write_bytes, body)
+        result = await analyze_local_segment(
+            session,
+            settings=settings,
+            storage=None,  # keep the agent-uploaded key; avoid double upload
+            stream=stream,
+            sequence=sequence,
+            video_path=video_path,
+            existing_storage_key=storage_key,
+            existing_size_bytes=size_bytes or len(body),
+        )
+        return result
+
+
 async def analyze_local_segment(
     session: AsyncSession,
     *,
@@ -233,6 +261,8 @@ async def analyze_local_segment(
     stream: StreamSession,
     sequence: int,
     video_path: Path,
+    existing_storage_key: str | None = None,
+    existing_size_bytes: int | None = None,
 ) -> SegmentResult:
     """FFmpeg frames + ASR + Bedrock + DB persist for one local MP4."""
     with tempfile.TemporaryDirectory(prefix="streamclip-seg-") as tmp:
@@ -262,12 +292,18 @@ async def analyze_local_segment(
                 frame_paths=frames,
             )
 
-        size_bytes, body = await asyncio.to_thread(_read_video, video_path)
-        storage_key = live_segment_key(stream.id, sequence)
-        if storage is not None:
-            await storage.put_object(
-                storage_key, body, content_type="video/mp4", short_retention=True
+        if existing_storage_key:
+            storage_key = existing_storage_key
+            size_bytes = existing_size_bytes or await asyncio.to_thread(
+                lambda: video_path.stat().st_size
             )
+        else:
+            size_bytes, body = await asyncio.to_thread(_read_video, video_path)
+            storage_key = live_segment_key(stream.id, sequence)
+            if storage is not None:
+                await storage.put_object(
+                    storage_key, body, content_type="video/mp4", short_retention=True
+                )
 
         result = await persist_segment_analysis(
             session,

@@ -10,7 +10,9 @@ export type Capabilities = {
   live_processing: boolean;
   ingest_keys: boolean;
   ingest_online: boolean;
-  /** Memorable resolve URL (`…/rtmp`) — secret → unique spot → RTMP. */
+  /** Stable OBS server URL (same for every org). */
+  ingest_rtmp_url: string | null;
+  /** Status / docs URL (not the OBS server field). */
   ingest_api_url: string | null;
   social_oauth: boolean;
 };

@@ -82,22 +82,22 @@ class Settings(BaseSettings):
     aws_role_session_name: str = "streamclip-api"
     aws_role_duration_seconds: int = 3600
 
-    # --- Ingest (per-org MediaMTX t4g.small spot) ----------------------------
-    # Users get PUBLIC_APP_URL/rtmp?key=… → quota check → start unique spot →
-    # 302 rtmp://{instance-ip}:1935/live. No shared fallback host.
+    # --- Ingest (edge RTMP + per-org dedicated compute spots) ---------------
+    # OBS: one stable URL (INGEST_RTMPS_URL / rtmp://INGEST_PUBLIC_HOST:1935/live)
+    # + stream key. Edge MediaMTX auths via API, then relays to the org's
+    # dedicated t4g.small spot which runs the 5-min analysis loop.
     ingest_hook_secret: SecretStr | None = None
     ingest_api_auth_url: str | None = None
     ingest_api_event_url: str | None = None
-    # EC2 launch (required in staging/production for real spots).
+    # Dedicated compute spots (launched per org when they go live).
     ingest_ec2_ami_id: str | None = None
     ingest_ec2_subnet_id: str | None = None
     ingest_ec2_security_group_id: str | None = None
     ingest_ec2_instance_profile: str | None = None
     ingest_ec2_instance_type: str = "t4g.small"
     ingest_ec2_region: str | None = None
-    # Legacy optional SRT template (advanced).
     ingest_srt_url: str | None = None
-    # Deprecated: ignored for resolve (no shared host). Kept for env compat.
+    # Shared edge host shown to every user in OBS (required for ingest_online).
     ingest_public_host: str | None = None
     ingest_rtmps_url: str | None = None
 
@@ -155,9 +155,28 @@ class Settings(BaseSettings):
         )
 
     @property
+    def edge_rtmp_url(self) -> str | None:
+        """Stable OBS server URL (same for every org).
+
+        Prefer INGEST_RTMPS_URL. Otherwise build from INGEST_PUBLIC_HOST:
+        bare IPs keep :1935; hostnames omit the port (RTMP default is 1935),
+        e.g. rtmp://rtmp.streamclip.fr/live.
+        """
+        explicit = (self.ingest_rtmps_url or "").strip()
+        if explicit:
+            return explicit
+        host = (self.ingest_public_host or "").strip()
+        if not host:
+            return None
+        # Hostname → clean OBS URL; raw IP → keep explicit port.
+        if any(c.isalpha() for c in host):
+            return f"rtmp://{host}/live"
+        return f"rtmp://{host}:1935/live"
+
+    @property
     def ingest_online(self) -> bool:
-        # Ready to start per-org spots (AWS configured, or local/test fake launcher).
-        return self.ingest_launcher_configured or self.environment in ("local", "test")
+        """True when OBS has a stable edge RTMP URL to connect to."""
+        return bool(self.edge_rtmp_url)
 
     def jwt_keyring(self) -> dict[str, str]:
         keyring: dict[str, str] = {}

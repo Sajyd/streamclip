@@ -9,7 +9,7 @@ variable "bucket_name" {
 }
 
 variable "enable_ingest_node" {
-  description = "Launch a MediaMTX EC2 ingest node (default VPC)."
+  description = "Shared edge MediaMTX: one RTMP URL for all OBS clients; relays to per-org spots."
   type        = bool
   default     = true
 }

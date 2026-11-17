@@ -6,9 +6,7 @@ import {
   issueIngestKeyAction,
   revokeIngestKeyAction,
   rotateIngestKeyAction,
-  resolveIngestAction,
   type IssueKeyState,
-  type ResolveState,
 } from "@/app/actions/ingest";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
@@ -18,7 +16,6 @@ import { cx, formatDateTime } from "@/lib/format";
 import type { StreamKey } from "@/types/api";
 
 const INITIAL: IssueKeyState = { ...idleState };
-const RESOLVE_INITIAL: ResolveState = { ...idleState };
 
 /** Full-value copy field — long keys must wrap, never truncate. */
 export function CopyField({ label, value }: { label: string; value: string }) {
@@ -69,31 +66,28 @@ function IssueOrRotateForm({
   submitLabel,
   pendingLabel,
   defaultLabel,
-  apiUrl,
+  edgeRtmp,
 }: {
   action: (state: IssueKeyState, formData: FormData) => Promise<IssueKeyState>;
   submitLabel: string;
   pendingLabel: string;
   defaultLabel?: string;
-  apiUrl: string | null;
+  edgeRtmp: string | null;
 }) {
   const [state, formAction, pending] = useActionState(action, INITIAL);
   const issued = state.key;
-  const resolveUrl = issued?.ingest_api_url ?? apiUrl;
+  const serverUrl = issued?.rtmps_url ?? edgeRtmp;
 
   return (
     <div className="space-y-4">
       {issued?.stream_key ? (
         <div className="space-y-3">
           <Notice tone="warn" title="Copiez ces valeurs maintenant">
-            La clé secrète ne sera plus jamais réaffichée. Si vous la perdez, régénérez-en une depuis
-            Paramètres. L&apos;URL API démarre votre instance spot et renvoie l&apos;adresse RTMP.
+            La clé secrète ne sera plus jamais réaffichée. Dans OBS : Service = Personnalisé,
+            Serveur = URL RTMP ci-dessous, Clé = stream key.
           </Notice>
-          {resolveUrl ? <CopyField label="URL resolve (…/rtmp)" value={resolveUrl} /> : null}
-          <CopyField label="Clé secrète (stream key)" value={issued.stream_key} />
-          {issued.rtmps_url ? (
-            <CopyField label="Serveur RTMP (instance dédiée)" value={issued.rtmps_url} />
-          ) : null}
+          {serverUrl ? <CopyField label="Serveur OBS / Streamlabs" value={serverUrl} /> : null}
+          <CopyField label="Clé de stream" value={issued.stream_key} />
         </div>
       ) : null}
       <form action={formAction} className="space-y-4">
@@ -131,84 +125,45 @@ function IssueOrRotateForm({
   );
 }
 
-function PrepareLiveForm({ apiUrl }: { apiUrl: string | null }) {
-  const [state, formAction, pending] = useActionState(resolveIngestAction, RESOLVE_INITIAL);
-  const resolved = state.resolve;
-
-  return (
-    <div className="space-y-3 rounded-2xl border border-white/10 bg-ink-950/50 p-4">
-      <p className="text-sm font-medium text-white">Démarrer mon live</p>
-      <p className="text-xs leading-relaxed text-ink-400">
-        Vérifie le quota, lance votre EC2 spot unique, renvoie l&apos;URL RTMP à coller dans OBS
-        (avec la clé secrète que vous avez sauvegardée).
-      </p>
-      {apiUrl ? <CopyField label="URL /rtmp" value={apiUrl} /> : null}
-      <form action={formAction} className="space-y-3">
-        <PendingButton pending={pending} pendingLabel="Démarrage de l'instance…">
-          Démarrer mon instance
-        </PendingButton>
-      </form>
-      {resolved ? (
-        <div className="space-y-3 border-t border-white/5 pt-3">
-          <Badge tone={resolved.status === "ready" ? "ok" : "warn"}>{resolved.status}</Badge>
-          <p className="text-sm text-ink-300">{resolved.message}</p>
-          {resolved.rtmp_url ? (
-            <CopyField label="Serveur RTMP (OBS / Streamlabs)" value={resolved.rtmp_url} />
-          ) : null}
-          {resolved.analysis_url ? (
-            <CopyField label="Port analyse (instance)" value={resolved.analysis_url} />
-          ) : null}
-        </div>
-      ) : null}
-      {state.status === "error" && state.message ? (
-        <p role="alert" className="text-sm text-danger-400">
-          {state.message}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-/** Create / rotate / revoke + resolve dedicated RTMP instance (show-once secret). */
+/** Create / rotate / revoke — one RTMP URL + stream key for OBS. */
 export function StreamKeyManager({
   canManage,
   ingestOnline,
-  apiUrl,
+  rtmpUrl,
   existingKey,
   timeZone,
   defaultLabel,
 }: {
   canManage: boolean;
   ingestOnline: boolean;
-  apiUrl: string | null;
+  rtmpUrl: string | null;
   existingKey: StreamKey | null;
   timeZone?: string;
   defaultLabel?: string;
 }) {
-  const resolveUrl = existingKey?.ingest_api_url ?? apiUrl;
+  const edgeRtmp = existingKey?.rtmps_url ?? rtmpUrl;
 
   return (
     <div className="space-y-4">
-      <Notice tone="neutral" title="Comment ça marche">
-        URL mémorisable <code className="text-ink-100">/rtmp</code> + votre clé secrète. Au démarrage
-        du live, STREAMCLIP vérifie votre abonnement et le temps restant, lance votre EC2 spot
-        dédié, puis redirige vers <code className="text-ink-200">rtmp://…</code>. MediaMTX ingère ;
-        toutes les 5&nbsp;min FFmpeg + IA mettent à jour la base. Fin de flux → arrêt du spot (marge
-        5&nbsp;min).
+      <Notice tone="neutral" title="Connexion OBS / Streamlabs">
+        Une seule URL RTMP pour tout le monde. Votre clé secrète identifie votre compte : au
+        démarrage du live, STREAMCLIP vérifie l&apos;abonnement et les heures restantes, allume
+        votre instance EC2 dédiée, y relaie le flux, et lance l&apos;analyse toutes les 5&nbsp;min.
+        Fin de live → arrêt du spot (marge 5&nbsp;min).
       </Notice>
 
       {!ingestOnline ? (
-        <Notice tone="warn" title="Lancement d'instances non configuré">
-          Vous pouvez créer votre clé. Le démarrage EC2 spot nécessite la config launcher
-          (AMI / subnet / security group).
+        <Notice tone="warn" title="Ingestion hors ligne">
+          Le serveur RTMP edge n&apos;est pas encore configuré (INGEST_PUBLIC_HOST). Vous pouvez
+          créer une clé ; la connexion OBS sera disponible dès que l&apos;edge est en ligne.
         </Notice>
       ) : null}
 
-      {resolveUrl ? (
+      {edgeRtmp ? (
         <div className="rounded-2xl border border-white/10 bg-ink-950/70 p-4">
-          <CopyField label="URL resolve (…/rtmp)" value={resolveUrl} />
+          <CopyField label="Serveur OBS / Streamlabs" value={edgeRtmp} />
           <p className="mt-2 text-xs text-ink-400">
-            Exemple : <code className="text-ink-300">{resolveUrl}?key=…</code>
+            Service = Personnalisé · collez ensuite votre clé de stream.
           </p>
         </div>
       ) : null}
@@ -220,9 +175,6 @@ export function StreamKeyManager({
             <Badge>…{existingKey.key_hint}</Badge>
             {existingKey.label ? <span className="text-ink-400">{existingKey.label}</span> : null}
           </div>
-          {existingKey.rtmps_url ? (
-            <CopyField label="Serveur RTMP (instance prête)" value={existingKey.rtmps_url} />
-          ) : null}
           <p className="text-xs text-ink-400">
             {timeZone
               ? `Créée le ${formatDateTime(existingKey.created_at, timeZone)}${
@@ -243,17 +195,16 @@ export function StreamKeyManager({
             submitLabel="Créer ma clé d'ingestion"
             pendingLabel="Création…"
             defaultLabel={defaultLabel}
-            apiUrl={apiUrl}
+            edgeRtmp={edgeRtmp}
           />
         ) : (
           <div className="space-y-4">
-            <PrepareLiveForm apiUrl={resolveUrl} />
             <IssueOrRotateForm
               action={rotateIngestKeyAction}
               submitLabel="Régénérer la clé"
               pendingLabel="Régénération…"
               defaultLabel={existingKey.label || defaultLabel}
-              apiUrl={apiUrl}
+              edgeRtmp={edgeRtmp}
             />
             <Form
               action={revokeIngestKeyAction as (state: FormState) => Promise<FormState>}

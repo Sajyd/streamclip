@@ -125,10 +125,11 @@ class Capabilities(ApiModel):
     # Control plane for STREAMCLIP ingest keys (OBS destinations). Independent
     # of live_processing: keys can be issued before MediaMTX accepts traffic.
     ingest_keys: bool
-    # True when a public ingest hostname is configured (publish accepted).
+    # True when the shared edge RTMP URL is configured (OBS can connect).
     ingest_online: bool
-    # Stable API resolve URL (same for every org). POST/GET with the stream key
-    # starts the dedicated spot and redirects/returns that user's RTMP URL.
+    # Stable edge RTMP URL for OBS (same for every org).
+    ingest_rtmp_url: str | None = None
+    # Optional status / docs URL (not the OBS server field).
     ingest_api_url: str | None
     # Official OAuth for social networks (YouTube / TikTok / Instagram).
     social_oauth: bool
@@ -422,6 +423,14 @@ class IngestResolveOut(ApiModel):
     message: str
 
 
+class IngestRelayTargetOut(ApiModel):
+    """Edge → dedicated push target (polled by the shared ingest node)."""
+
+    status: str  # ready | starting | unavailable
+    rtmp_push_url: str | None = None
+    message: str
+
+
 class StreamSessionOut(ApiModel):
     id: uuid.UUID
     status: str
@@ -459,3 +468,7 @@ class IngestEventHookRequest(ApiModel):
     ip: Annotated[str | None, Field(max_length=64)] = None
     # Optional processing tick from the ingest agent (milliseconds).
     processed_ms: int | None = Field(default=None, ge=1, le=3_600_000)
+    # 5-minute HD segment uploaded to S3 by the on-box agent.
+    storage_key: Annotated[str | None, Field(default=None, max_length=512)] = None
+    sequence: int | None = Field(default=None, ge=0, le=10_000)
+    size_bytes: int | None = Field(default=None, ge=0)

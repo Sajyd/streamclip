@@ -100,6 +100,48 @@ async def delete_account(ctx: AppContext, task: ClaimedTask) -> None:
     )
 
 
+@task_handler("ingest.ensure_node")
+async def ensure_dedicated_ingest_node(ctx: AppContext, task: ClaimedTask) -> None:
+    """Launch (or reuse) the org's dedicated compute spot for live analysis."""
+    from app.services import ingest_nodes
+
+    organization_id = _uuid(task, "organization_id")
+    async with ctx.db.system_tx() as session:
+        await ingest_nodes.ensure_dedicated_node(
+            session, ctx.settings, organization_id=organization_id, start=True
+        )
+
+
+@task_handler("analysis.segment")
+async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
+    """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent."""
+    from app.models.media import StreamSession
+    from app.services.segment_pipeline import analyze_uploaded_segment
+
+    session_id = _uuid(task, "stream_session_id")
+    sequence = int(task.payload.get("sequence", 0))
+    storage_key = str(task.payload.get("storage_key") or "")
+    size_bytes = int(task.payload.get("size_bytes") or 0)
+    if not storage_key:
+        raise PermanentTaskError("storage_key required")
+    if ctx.storage is None:
+        raise PermanentTaskError("Object storage unavailable")
+
+    async with ctx.db.system_tx() as session:
+        stream = await session.get(StreamSession, session_id)
+        if stream is None:
+            raise PermanentTaskError("stream session missing")
+        await analyze_uploaded_segment(
+            session,
+            settings=ctx.settings,
+            storage=ctx.storage,
+            stream=stream,
+            sequence=sequence,
+            storage_key=storage_key,
+            size_bytes=size_bytes,
+        )
+
+
 @task_handler("analysis.transcribe")
 async def transcribe_window(ctx: AppContext, task: ClaimedTask) -> None:
     """Run ASR for one analysis window. Skips honestly when audio is missing."""

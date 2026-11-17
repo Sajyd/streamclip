@@ -127,14 +127,14 @@ async function Settings() {
           <Card>
             <CardTitle>Clé d&apos;ingestion</CardTitle>
             <CardDescription>
-              URL API + clé secrète. L&apos;API démarre votre instance spot et renvoie le RTMP. La clé
-              n&apos;est affichée qu&apos;une seule fois à la création ou à la régénération.
+              Une URL RTMP + votre clé secrète (affichée une seule fois). Au live, le flux est
+              relayé vers votre instance EC2 dédiée.
             </CardDescription>
             <div className="mt-5">
               <StreamKeyManager
                 canManage={canManage}
                 ingestOnline={capabilities.ingest_online}
-                apiUrl={capabilities.ingest_api_url}
+                rtmpUrl={capabilities.ingest_rtmp_url}
                 existingKey={ingestKey}
                 timeZone={timeZone}
               />

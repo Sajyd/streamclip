@@ -81,14 +81,13 @@ def endpoints_for(
 ) -> IngestEndpoints:
     """Values shown in the product UI / OBS.
 
-    API URL   = stable resolve endpoint (same for every org). Calling it with
-                the stream key starts/finds the dedicated spot and returns the
-                RTMP URL for that user's MediaMTX instance.
-    Stream Key = {public_id}/{secret}  (shown once).
-    RTMP URL   = only when the dedicated instance is READY (per org).
+    RTMP URL   = one stable edge URL for every org (OBS Server field).
+    Stream Key = {public_id}/{secret}  (shown once) — routes to the org spot.
+    instance_rtmp_url is ignored for the UI (internal relay target only).
     """
     from app.services.ingest_nodes import ingest_api_url
 
+    _ = instance_rtmp_url  # dedicated IP is never shown to the user
     stream_key = f"{public_id}/{secret}" if secret else None
     srt: str | None = None
     host = (settings.ingest_public_host or "").strip() or None
@@ -100,7 +99,7 @@ def endpoints_for(
             srt = srt.format(public_id=public_id, secret=secret)
     return IngestEndpoints(
         ingest_api_url=ingest_api_url(settings),
-        rtmps_url=instance_rtmp_url,
+        rtmps_url=settings.edge_rtmp_url,
         srt_url=srt,
         stream_key=stream_key,
         online=settings.ingest_online,

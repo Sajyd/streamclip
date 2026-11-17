@@ -374,13 +374,13 @@ export function ObsRtmpGuide({
   existingKey,
   canManage,
   ingestOnline,
-  apiUrl,
+  rtmpUrl,
 }: {
   software: "obs" | "streamlabs";
   existingKey: StreamKey | null;
   canManage: boolean;
   ingestOnline: boolean;
-  apiUrl: string | null;
+  rtmpUrl: string | null;
 }) {
   const isStreamlabs = software === "streamlabs";
 
@@ -395,12 +395,14 @@ export function ObsRtmpGuide({
             fois).
           </li>
           <li>
-            2. Cliquez « Démarrer mon instance » pour lancer votre spot dédié et récupérer{" "}
-            <code className="text-ink-100">rtmp://IP:1935/live</code>.
+            2. Dans OBS / Streamlabs : Serveur ={" "}
+            <code className="text-ink-100">{rtmpUrl ?? "rtmp://…:1935/live"}</code>, Clé = votre
+            stream key. Au démarrage du live, votre instance EC2 dédiée s&apos;allume
+            automatiquement.
           </li>
           <li>
-            3. Suivez ensuite le guide {isStreamlabs ? "Streamlabs" : "OBS"} pour installer /
-            brancher la sortie Multiple RTMP.
+            3. Suivez le guide {isStreamlabs ? "Streamlabs" : "OBS"} pour la sortie Multiple RTMP
+            si vous streamez aussi vers Twitch / YouTube.
           </li>
         </ol>
       </div>
@@ -408,7 +410,7 @@ export function ObsRtmpGuide({
       <StreamKeyManager
         canManage={canManage}
         ingestOnline={ingestOnline}
-        apiUrl={apiUrl}
+        rtmpUrl={rtmpUrl}
         existingKey={existingKey}
         defaultLabel={isStreamlabs ? "Streamlabs" : "OBS"}
       />
