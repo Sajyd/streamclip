@@ -62,6 +62,14 @@ resource "aws_security_group" "ingest" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Dedicated analysis agent"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   dynamic "ingress" {
     for_each = length(var.ssh_cidr_blocks) > 0 ? [1] : []
     content {
@@ -208,34 +216,11 @@ locals {
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-relay
     chmod +x /usr/local/bin/streamclip-edge-relay
 
-    cat > /usr/local/bin/streamclip-edge-tick <<'TICK'
-    #!/bin/bash
-    PATH_NAME="$1"
-    SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
-    mkdir -p /var/run/streamclip
-    PIDFILE="/var/run/streamclip/tick_$${SAFE}.pid"
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-      exit 0
-    fi
-    echo $$ > "$PIDFILE"
-    trap 'rm -f "$PIDFILE"' EXIT
-    while true; do
-      sleep 60
-      curl -fsS -X POST -H Content-Type:application/json \
-        -H "X-Streamclip-Ingest-Secret: $HOOK" \
-        -d "{\"event\":\"tick\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\",\"processed_ms\":60000}" \
-        "$EVENT_URL" || true
-    done
-    TICK
-    sed -i 's/^    //' /usr/local/bin/streamclip-edge-tick
-    chmod +x /usr/local/bin/streamclip-edge-tick
-
     cat > /usr/local/bin/streamclip-edge-on-ready <<ONREADY
     #!/bin/bash
     mkdir -p /var/run/streamclip
     export HOOK='$HOOK' EVENT_URL='$EVENT_URL' RELAY_URL='$RELAY_URL'
     nohup /usr/local/bin/streamclip-edge-relay "\$1" >>/var/log/streamclip-relay.log 2>&1 &
-    nohup /usr/local/bin/streamclip-edge-tick "\$1" >>/var/log/streamclip-tick.log 2>&1 &
     ONREADY
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-on-ready
     chmod +x /usr/local/bin/streamclip-edge-on-ready
@@ -244,13 +229,11 @@ locals {
     #!/bin/bash
     PATH_NAME="\$1"
     SAFE=\$(echo "\$PATH_NAME" | tr '/:' '__')
-    for KIND in relay tick; do
-      PIDFILE="/var/run/streamclip/$${KIND}_\$SAFE.pid"
-      if [ -f "\$PIDFILE" ]; then
-        kill "\$(cat "\$PIDFILE")" 2>/dev/null || true
-        rm -f "\$PIDFILE"
-      fi
-    done
+    PIDFILE="/var/run/streamclip/relay_\$SAFE.pid"
+    if [ -f "\$PIDFILE" ]; then
+      kill "\$(cat "\$PIDFILE")" 2>/dev/null || true
+      rm -f "\$PIDFILE"
+    fi
     pkill -f "ffmpeg.*(rtmp|rtsp).*\$PATH_NAME" 2>/dev/null || true
     curl -fsS -X POST -H Content-Type:application/json \
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
@@ -262,6 +245,11 @@ locals {
 
     cat > /etc/mediamtx/mediamtx.yml <<YAML
     logLevel: info
+    # 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC preview / relay).
+    # Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
+    writeQueueSize: 2048
+    readTimeout: 15s
+    writeTimeout: 15s
     rtmp: yes
     rtmpAddress: :1935
     srt: yes

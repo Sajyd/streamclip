@@ -151,9 +151,13 @@ async def ensure_dedicated_ingest_node(ctx: AppContext, task: ClaimedTask) -> No
 
 @task_handler("analysis.segment")
 async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
-    """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent."""
+    """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent.
+
+    Quota: −5 minutes only after a successful analysis (not on upload / ticks).
+    """
     from app.models.media import StreamSession
-    from app.services.segment_pipeline import analyze_uploaded_segment
+    from app.services import ingest as ingest_service
+    from app.services.segment_pipeline import WINDOW_MS, analyze_uploaded_segment
 
     session_id = _uuid(task, "stream_session_id")
     sequence = int(task.payload.get("sequence", 0))
@@ -177,6 +181,17 @@ async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
             storage_key=storage_key,
             size_bytes=size_bytes,
         )
+        # Charge exactly one 5-min window once analysis persisted.
+        already = stream.processed_ms or 0
+        target = (sequence + 1) * WINDOW_MS
+        unbilled = max(0, target - already)
+        if unbilled > 0:
+            await ingest_service.record_processed_tick(
+                session,
+                stream,
+                processed_ms=unbilled,
+                media_end_ms=target,
+            )
 
 
 @task_handler("analysis.transcribe")

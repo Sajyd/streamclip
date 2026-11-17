@@ -11,6 +11,7 @@ import base64
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import structlog
@@ -95,12 +96,15 @@ class AwsSpotLauncher:
         region_q = _sq(region)
         auth_q = _sq(auth_with_secret)
 
-        # Native MediaMTX so runOn* can call host ffmpeg / aws / curl.
+        agent_path = Path(__file__).with_name("ingest_agent.py")
+        agent_b64 = base64.b64encode(agent_path.read_bytes()).decode("ascii")
+
+        # Native MediaMTX + :8080 analysis agent (5-min buffer → S3 → API).
         # AL2023 has no ffmpeg package — install static arm64 build.
         script = f"""#!/bin/bash
 set -eo pipefail
-dnf install -y awscli || dnf install -y aws-cli || true
-mkdir -p /etc/mediamtx /var/lib/streamclip/segments /var/run/streamclip /usr/local/bin
+dnf install -y awscli python3 || dnf install -y aws-cli python3 || true
+mkdir -p /etc/mediamtx /var/lib/streamclip/segments /var/run/streamclip /usr/local/bin /etc/streamclip
 if ! command -v ffmpeg >/dev/null 2>&1; then
   FFDIR=$(mktemp -d)
   curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"
@@ -111,6 +115,12 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 ffmpeg -version | head -1
 export AWS_DEFAULT_REGION='{region_q}'
+cat > /etc/streamclip/agent.env <<ENV
+HOOK={hook_q}
+EVENT_URL={event_q}
+S3_BUCKET={bucket_q}
+AWS_REGION={region_q}
+ENV
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
   | tar -xz -C /usr/local/bin mediamtx
@@ -130,9 +140,12 @@ echo $$ > "$PIDFILE"
 SEQ=0
 [ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE")
 trap 'rm -f "$PIDFILE"' EXIT
+# shellcheck disable=SC1091
+[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
 while true; do
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
   rm -f "$OUT"
+  # 5-minute HD buffer from local RTSP remux of the live RTMP path.
   if ! ffmpeg -y -rtsp_transport tcp -fflags +genpts+igndts \\
       -use_wallclock_as_timestamps 1 \\
       -i "rtsp://127.0.0.1:8554/${{PATH_NAME}}" \\
@@ -149,6 +162,7 @@ while true; do
   if [ -n "$S3_BUCKET" ]; then
     aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "$AWS_REGION" || true
   fi
+  # API runs FFmpeg frames (5s/480p) + ASR + Luna, then -5 min quota.
   curl -fsS -X POST -H "Content-Type: application/json" \\
     -H "X-Streamclip-Ingest-Secret: $HOOK" \\
     -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":300000}}" \\
@@ -160,23 +174,36 @@ done
 AGENT
 chmod +x /usr/local/bin/streamclip-segment-loop
 
+echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
+chmod +x /usr/local/bin/streamclip-analysis-agent.py
+
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
 PATH_NAME="$1"
 mkdir -p /var/run/streamclip /var/lib/streamclip/segments
-export HOOK='{hook_q}' EVENT_URL='{event_q}' S3_BUCKET='{bucket_q}' AWS_REGION='{region_q}'
+# shellcheck disable=SC1091
+[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
 curl -fsS -X POST -H "Content-Type: application/json" \\
   -H "X-Streamclip-Ingest-Secret: $HOOK" \\
   -d "{{\\"event\\":\\"publisher_ready\\",\\"path\\":\\"$PATH_NAME\\",\\"protocol\\":\\"rtmp\\"}}" \\
   "$EVENT_URL" || true
-nohup /usr/local/bin/streamclip-segment-loop "$PATH_NAME" >>/var/log/streamclip-segment.log 2>&1 &
+# Hand buffer ownership to the :8080 agent (fallback to direct loop).
+if ! curl -fsS -X POST -H "Content-Type: application/json" \\
+    -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
+    "http://127.0.0.1:8080/start"; then
+  nohup /usr/local/bin/streamclip-segment-loop "$PATH_NAME" >>/var/log/streamclip-segment.log 2>&1 &
+fi
 ONREADY
 chmod +x /usr/local/bin/streamclip-on-ready
 
 cat > /usr/local/bin/streamclip-on-not-ready <<'OFFREADY'
 #!/bin/bash
 PATH_NAME="$1"
-export HOOK='{hook_q}' EVENT_URL='{event_q}'
+# shellcheck disable=SC1091
+[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
+curl -fsS -X POST -H "Content-Type: application/json" \\
+  -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
+  "http://127.0.0.1:8080/stop" || true
 SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
 PIDFILE="/var/run/streamclip/seg_$SAFE.pid"
 if [ -f "$PIDFILE" ]; then
@@ -193,6 +220,11 @@ chmod +x /usr/local/bin/streamclip-on-not-ready
 # Quote heredoc so $MTX_PATH is written literally for MediaMTX to expand at runtime.
 cat > /etc/mediamtx/mediamtx.yml <<'YAML'
 logLevel: info
+# 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC / segment ffmpeg).
+# Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
+writeQueueSize: 2048
+readTimeout: 15s
+writeTimeout: 15s
 rtmp: yes
 rtmpAddress: :1935
 srt: yes
@@ -211,11 +243,27 @@ paths:
 YAML
 sed -i "s|AUTH_HTTP_ADDRESS_PLACEHOLDER|{auth_q}|" /etc/mediamtx/mediamtx.yml
 
+cat > /etc/systemd/system/streamclip-agent.service <<'UNIT'
+[Unit]
+Description=STREAMCLIP dedicated analysis agent (:8080)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+EnvironmentFile=-/etc/streamclip/agent.env
+Environment=AWS_DEFAULT_REGION={region_q}
+ExecStart=/usr/bin/python3 /usr/local/bin/streamclip-analysis-agent.py
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 cat > /etc/systemd/system/mediamtx.service <<'UNIT'
 [Unit]
 Description=STREAMCLIP MediaMTX ingest
-After=network-online.target
-Wants=network-online.target
+After=network-online.target streamclip-agent.service
+Wants=network-online.target streamclip-agent.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
@@ -226,6 +274,7 @@ Environment=AWS_DEFAULT_REGION={region_q}
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
+systemctl enable --now streamclip-agent
 systemctl enable --now mediamtx
 """
         return script

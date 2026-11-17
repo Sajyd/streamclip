@@ -93,7 +93,15 @@ async def test_relay_target_starts_unique_dedicated_spot(
     assert other_host != host
 
 
-async def test_auth_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
+async def test_auth_rejects_exhausted_quota(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """Quota is charged per analyzed 5-min segment — not wall-clock ticks."""
+    from sqlalchemy import select
+
+    from app.models.media import StreamSession
+    from app.services import ingest as ingest_service
+
     account = await register(client, email="ingest-auth-quota@example.com")
     issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
     clear = issued["stream_key"]
@@ -112,6 +120,8 @@ async def test_auth_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
             headers=hook,
         )
     ).status_code == 200
+
+    # Tick is heartbeat only — must not exhaust quota.
     assert (
         await client.post(
             f"{API}/ingest/hooks/event",
@@ -119,6 +129,28 @@ async def test_auth_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
             headers=hook,
         )
     ).status_code == 200
+    still_ok = await client.post(
+        f"{API}/ingest/hooks/auth",
+        json={
+            "action": "publish",
+            "path": f"live/{public_id}",
+            "protocol": "rtmp",
+            "password": secret,
+        },
+        headers=hook,
+    )
+    assert still_ok.status_code == 200
+
+    # Simulate successful analysis of enough 5-min windows to exhaust free quota.
+    async with ctx.db.system_tx() as session:
+        stream = (
+            await session.execute(
+                select(StreamSession).order_by(StreamSession.created_at.desc()).limit(1)
+            )
+        ).scalar_one()
+        await ingest_service.record_processed_tick(
+            session, stream, processed_ms=3_600_000, media_end_ms=3_600_000
+        )
 
     blocked = await client.post(
         f"{API}/ingest/hooks/auth",
@@ -201,7 +233,8 @@ async def test_mediamtx_auth_opens_session_and_disconnect_closes(
     assert end.status_code == 200
     sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
     assert sessions[0]["status"] == "completed"
-    assert sessions[0]["processed_ms"] == 5_000
+    # Ticks do not bill — processed_ms stays 0 until a segment is analyzed.
+    assert sessions[0]["processed_ms"] == 0
 
 
 async def test_stale_live_session_closed_when_listing(
@@ -261,6 +294,7 @@ async def test_publish_rejected_when_quota_exhausted(client: httpx.AsyncClient) 
             headers=hook,
         )
     ).status_code == 200
+    # Tick alone must not close the session for quota.
     assert (
         await client.post(
             f"{API}/ingest/hooks/event",
@@ -274,21 +308,8 @@ async def test_publish_rejected_when_quota_exhausted(client: httpx.AsyncClient) 
     ).status_code == 200
 
     sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
-    assert sessions[0]["status"] == "completed"
-    assert sessions[0]["end_reason"] == "quota_exhausted"
-
-    blocked = await client.post(
-        f"{API}/ingest/hooks/auth",
-        json={
-            "action": "publish",
-            "path": f"live/{public_id}",
-            "protocol": "rtmp",
-            "password": secret,
-        },
-        headers=hook,
-    )
-    assert blocked.status_code == 403
-    assert blocked.json()["error"]["code"] == "quota_exhausted"
+    assert sessions[0]["status"] == "live"
+    assert sessions[0]["processed_ms"] == 0
 
 
 async def test_hook_requires_shared_secret(client: httpx.AsyncClient) -> None:

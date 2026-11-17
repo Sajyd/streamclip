@@ -76,6 +76,7 @@ async def persist_segment_analysis(
     size_bytes: int,
     moments: list[ViralMoment],
     transcript_text: str,
+    transcript_words: list[dict[str, Any]] | None = None,
     frames: int,
     model: str,
     provider: str,
@@ -141,8 +142,10 @@ async def persist_segment_analysis(
     window.signals = {
         "pipeline": "segment_luna",
         "storage_key": storage_key,
+        "segment_url_key": storage_key,
         "frames": frames,
         "moments": len(moments),
+        "transcript_words": transcript_words or [],
     }
     window.analyzed_at = now
 
@@ -157,7 +160,11 @@ async def persist_segment_analysis(
         model=model,
         frames=frames,
         finished_at=now,
-        details={"moments": moments_to_json(moments), "storage_key": storage_key},
+        details={
+            "moments": moments_to_json(moments),
+            "storage_key": storage_key,
+            "transcript_words": transcript_words or [],
+        },
     )
     session.add(job)
 
@@ -211,7 +218,7 @@ async def persist_segment_analysis(
             )
         )
 
-    stream.processed_ms = max(stream.processed_ms or 0, end_ms)
+    # Quota / processed_ms is charged by analysis.segment after persist succeeds.
     stream.media_duration_ms = max(stream.media_duration_ms or 0, end_ms)
     stream.clips_count = (stream.clips_count or 0) + len(moments)
 
@@ -305,6 +312,15 @@ async def analyze_local_segment(
                     storage_key, body, content_type="video/mp4", short_retention=True
                 )
 
+        # Attach word-level transcript relative to each highlight (segment-relative ms).
+        for moment in moments:
+            if not moment.words:
+                moment.words = [
+                    w
+                    for w in words
+                    if w["end_ms"] >= moment.start_ms and w["start_ms"] <= moment.end_ms
+                ]
+
         result = await persist_segment_analysis(
             session,
             stream=stream,
@@ -313,6 +329,7 @@ async def analyze_local_segment(
             size_bytes=size_bytes,
             moments=moments,
             transcript_text=transcript.text,
+            transcript_words=words,
             frames=len(frames),
             model=model,
             provider="bedrock",

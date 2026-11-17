@@ -313,27 +313,6 @@ async def close_session(
     if stream.status not in OPEN_SESSION_STATUSES:
         return stream
     now = datetime.now(UTC)
-    # Bill wall-clock live time so the free hour moves even if segment analysis
-    # failed (relay/ffmpeg). Already-charged ticks/segments are not double-counted.
-    started = stream.started_at or stream.created_at
-    if started is not None:
-        live_ms = max(0, int((now - started).total_seconds() * 1000))
-        stream.media_duration_ms = max(stream.media_duration_ms or 0, live_ms)
-        unbilled = live_ms - (stream.processed_ms or 0)
-        if unbilled > 0:
-            await record_processed_tick(
-                session,
-                stream,
-                processed_ms=unbilled,
-                media_end_ms=live_ms,
-            )
-            # record_processed_tick may close for quota; if so we are done.
-            if stream.status not in OPEN_SESSION_STATUSES:
-                stream.error_code = error_code or stream.error_code
-                stream.error_message = error_message or stream.error_message
-                if reason is not StreamEndReason.QUOTA_EXHAUSTED:
-                    stream.end_reason = reason
-                return stream
     stream.status = (
         StreamSessionStatus.FAILED
         if reason is StreamEndReason.ERROR
@@ -392,7 +371,7 @@ async def record_processed_tick(
     processed_ms: int,
     media_end_ms: int | None = None,
 ) -> entitlements.QuotaSnapshot:
-    """Charge processed time and stop the session if the quota is exhausted."""
+    """Charge analyzed media time (−5 min per segment) and stop if quota exhausted."""
     if processed_ms <= 0:
         return (await entitlements.get_entitlement(session, stream.organization_id)).quota
     previous = stream.processed_ms
@@ -405,7 +384,7 @@ async def record_processed_tick(
         session,
         organization_id=stream.organization_id,
         quantity_ms=processed_ms,
-        idempotency_key=f"session:{stream.id}:tick:{previous}:{processed_ms}",
+        idempotency_key=f"session:{stream.id}:analyzed:{previous}:{processed_ms}",
         stream_session_id=stream.id,
         media_start_ms=previous,
         media_end_ms=previous + processed_ms,

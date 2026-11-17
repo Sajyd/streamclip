@@ -598,7 +598,7 @@ async def relay_target(
 
 @router.post("/ingest/hooks/event", response_model=Message)
 async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ctx) -> Message:
-    """Publisher disconnect / processing ticks from the ingest agent."""
+    """Publisher disconnect / segment upload / heartbeat from the ingest agent."""
     _require_hook_secret(request, ctx)
     public_id = _public_id_from_path(body.path)
     if public_id is None:
@@ -640,8 +640,8 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
                 session, organization_id=key.organization_id
             )
         elif event == "segment" and body.storage_key and body.sequence is not None:
-            # Segments drive analysis only. Wall-clock billing is via tick (edge)
-            # and session close — charging here would double-count the free hour.
+            # Upload ack only — quota is charged after analysis.segment succeeds
+            # (5 min per analyzed window). Ticks do not bill.
             from datetime import UTC, datetime
 
             stream.last_media_at = datetime.now(UTC)
@@ -663,10 +663,11 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             )
             queued_segment = True
         elif event in ("processed", "tick") and body.processed_ms:
-            await ingest_service.record_processed_tick(
-                session, stream, processed_ms=body.processed_ms
-            )
-            queued_transcription = True
+            # Heartbeat only — do not bill (quota = analyzed 5-min segments).
+            from datetime import UTC, datetime
+
+            stream.last_media_at = datetime.now(UTC)
+            await session.flush()
         elif event in ("lost", "signal_lost"):
             await ingest_service.close_session(session, stream, reason=StreamEndReason.SIGNAL_LOST)
             await ingest_nodes.schedule_idle_termination(

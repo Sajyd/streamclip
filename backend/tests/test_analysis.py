@@ -1,4 +1,4 @@
-"""Analysis windows scheduled from ingest ticks; transcription skips without media."""
+"""Analysis windows are opened when analyzed media advances (segment billing)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from app.context import AppContext
 from app.core import release
 from app.models.analysis import AnalysisJob, AnalysisWindow
 from app.models.enums import JobStatus, WindowStatus
+from app.models.media import StreamSession
+from app.services import ingest as ingest_service
 from app.services.analysis import WINDOW_MS
 from app.tasks.queue import run_due_tasks
 from tests.helpers import API, register
@@ -28,7 +30,7 @@ def _configure_ingest(ctx: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx.settings.ingest_hook_secret = None
 
 
-async def test_tick_opens_analysis_window_and_skips_without_audio(
+async def test_analyzed_progress_opens_window_and_skips_without_audio(
     client: httpx.AsyncClient, ctx: AppContext
 ) -> None:
     account = await register(client, email="analysis@example.com")
@@ -49,7 +51,7 @@ async def test_tick_opens_analysis_window_and_skips_without_audio(
         )
     ).status_code == 200
 
-    # One full 5-minute window of processed media.
+    # Heartbeat tick must not open analysis windows or bill quota.
     assert (
         await client.post(
             f"{API}/ingest/hooks/event",
@@ -62,7 +64,21 @@ async def test_tick_opens_analysis_window_and_skips_without_audio(
         )
     ).status_code == 200
 
-    # Drain any leftover analysis tasks (hook already drains, but be explicit).
+    async with ctx.db.system_tx() as session:
+        windows_before = list((await session.execute(select(AnalysisWindow))).scalars())
+    assert windows_before == []
+
+    # Successful segment analysis advances processed_ms → schedule windows.
+    async with ctx.db.system_tx() as session:
+        stream = (
+            await session.execute(
+                select(StreamSession).order_by(StreamSession.created_at.desc()).limit(1)
+            )
+        ).scalar_one()
+        await ingest_service.record_processed_tick(
+            session, stream, processed_ms=WINDOW_MS, media_end_ms=WINDOW_MS
+        )
+
     await run_due_tasks(
         ctx,
         worker="test-analysis",
