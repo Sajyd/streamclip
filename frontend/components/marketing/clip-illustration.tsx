@@ -52,7 +52,7 @@ export function ClipIllustration() {
               </div>
               <div className="relative aspect-video bg-ink-950">
                 <div className="absolute inset-0 bg-gradient-to-br from-ink-700 via-ink-850 to-ink-950" />
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_35%,rgba(92,112,212,0.35),transparent_55%)]" />
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_35%,rgba(0,19,222,0.4),transparent_55%)]" />
                 {/* Fake gameplay / content blocks */}
                 <div className="absolute inset-x-4 top-5 h-2/5 rounded-lg border border-white/10 bg-ink-800/80" />
                 <div className="absolute right-3 bottom-3 h-10 w-14 rounded-md border border-white/15 bg-ink-700/90 shadow-lg" />

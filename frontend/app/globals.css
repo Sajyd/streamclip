@@ -14,19 +14,16 @@
   --color-ink-200: #d0d6f0;
   --color-ink-100: #eef0fa;
 
-  /*
-   * Brand ramp from the 5-stop palette, with a softer mid blue as default
-   * (lightened / desaturated from #0006b1) so CTAs stay calm on dark UI.
-   */
-  --color-brand-200: #b8c3ef;
-  --color-brand-300: #93a2e4;
-  --color-brand-400: #7a8cdd;
-  --color-brand-500: #5c70d4;
+  /* Exact brand ramp from the provided 5-stop blue palette. */
+  --color-brand-200: #9aabff;
+  --color-brand-300: #6b82ff;
+  --color-brand-400: #0021f3;
+  --color-brand-500: #0013de;
   --color-brand-600: #0006b1;
   --color-brand-700: #05014a;
 
-  --color-flare-400: #8b9ae6;
-  --color-flare-500: #5c70d4;
+  --color-flare-400: #3358ff;
+  --color-flare-500: #0021f3;
 
   --color-ok-400: #4ade80;
   --color-ok-500: #22c55e;
