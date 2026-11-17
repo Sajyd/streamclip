@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import text
 
 from app.context import AppContext
 from app.core import release
@@ -201,6 +202,45 @@ async def test_mediamtx_auth_opens_session_and_disconnect_closes(
     sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
     assert sessions[0]["status"] == "completed"
     assert sessions[0]["processed_ms"] == 5_000
+
+
+async def test_stale_live_session_closed_when_listing(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """Abrupt OBS quit without publisher_disconnect must clear 'En direct'."""
+    account = await register(client, email="ingest-stale@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={
+                "action": "publish",
+                "path": f"live/{public_id}",
+                "protocol": "rtmp",
+                "password": secret,
+            },
+            headers=hook,
+        )
+    ).status_code == 200
+
+    live = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert live[0]["status"] == "live"
+
+    async with ctx.db.system_tx() as session:
+        await session.execute(
+            text(
+                "UPDATE stream_sessions"
+                " SET last_media_at = now() - interval '13 minutes',"
+                "     started_at = now() - interval '20 minutes'"
+            )
+        )
+
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert sessions[0]["status"] == "completed"
+    assert sessions[0]["end_reason"] == "signal_lost"
 
 
 async def test_publish_rejected_when_quota_exhausted(client: httpx.AsyncClient) -> None:

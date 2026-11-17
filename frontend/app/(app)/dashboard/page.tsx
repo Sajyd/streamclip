@@ -5,7 +5,6 @@ import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
 import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
 import { ClipsLibrary } from "@/components/app/clips-library";
-import { IngestPanel } from "@/components/app/ingest-panel";
 import { LiveDetector } from "@/components/app/live-detector";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
@@ -13,7 +12,6 @@ import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components
 import {
   getBillingOverview,
   getClips,
-  getIngestKey,
   getIngestSessions,
   getNotifications,
   requireSession,
@@ -34,12 +32,10 @@ const SEVERITY_DOT: Record<Notification["severity"], string> = {
 
 async function Dashboard() {
   const { token, me } = await requireSession(PATH);
-  const { user, organization, capabilities } = me;
-  const canManage = organization.role === "owner" || organization.role === "admin";
-  const [overview, notifications, ingestKey, ingestSessions, clips] = await Promise.all([
+  const { user, capabilities } = me;
+  const [overview, notifications, ingestSessions, clips] = await Promise.all([
     getBillingOverview(token, PATH),
     getNotifications(token, PATH),
-    capabilities.ingest_keys ? getIngestKey(token, PATH) : Promise.resolve(null),
     capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
     getClips(token, PATH),
   ]);
@@ -101,27 +97,6 @@ async function Dashboard() {
       </div>
 
       <ClipsLibrary clips={clips} timeZone={timeZone} />
-
-      {capabilities.ingest_keys ? (
-        <IngestPanel
-          canManage={canManage}
-          ingestOnline={capabilities.ingest_online}
-          rtmpUrl={capabilities.ingest_rtmp_url}
-          liveProcessing={capabilities.live_processing}
-          existingKey={ingestKey}
-          sessions={ingestSessions}
-          timeZone={timeZone}
-        />
-      ) : (
-        <Card>
-          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Production</p>
-          <CardTitle className="mt-2">Lives et clips</CardTitle>
-          <CardDescription className="mt-2 max-w-2xl leading-relaxed">
-            La connexion OBS et la génération de clips seront affichées ici dès qu&apos;elles
-            seront activées sur cette plateforme.
-          </CardDescription>
-        </Card>
-      )}
 
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">

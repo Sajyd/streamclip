@@ -31,11 +31,12 @@ export function LiveDetector({
     });
   }, [live, onDetected, router]);
 
+  // Keep polling while live too: an abrupt OBS quit must clear "En direct"
+  // as soon as the session is closed (or marked stale) on the API.
   useEffect(() => {
-    if (live) return;
     const timer = setInterval(() => router.refresh(), pollMs);
     return () => clearInterval(timer);
-  }, [live, pollMs, router]);
+  }, [pollMs, router]);
 
   if (live) {
     return (

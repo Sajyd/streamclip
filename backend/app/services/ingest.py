@@ -11,9 +11,9 @@ import hmac
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -38,6 +38,11 @@ OPEN_SESSION_STATUSES = frozenset(
         StreamSessionStatus.FINALIZING,
     }
 )
+
+# Segments land about every 5 min. After ~2 missed segments with no media tick
+# (and no publisher_disconnect hook), treat the live as gone — covers abrupt
+# OBS quits where MediaMTX never delivered runOnNotReady.
+STALE_MEDIA_AFTER = timedelta(minutes=12)
 
 _SECRET_PREFIX = "sc_live_"  # noqa: S105 - public prefix, not a credential
 _PUBLIC_ID_BYTES = 9  # 12 char urlsafe
@@ -331,6 +336,32 @@ async def close_session(
         connection.disconnect_reason = reason.value
     await session.flush()
     return stream
+
+
+async def close_stale_sessions(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID | None = None,
+    older_than: timedelta = STALE_MEDIA_AFTER,
+) -> list[StreamSession]:
+    """Close open sessions with no media for `older_than` (missed disconnect)."""
+    cutoff = datetime.now(UTC) - older_than
+    last_activity = func.coalesce(
+        StreamSession.last_media_at, StreamSession.started_at, StreamSession.created_at
+    )
+    statement = select(StreamSession).where(
+        StreamSession.status.in_(tuple(OPEN_SESSION_STATUSES)),
+        last_activity < cutoff,
+    )
+    if organization_id is not None:
+        statement = statement.where(StreamSession.organization_id == organization_id)
+    stale = list((await session.execute(statement)).scalars().all())
+    closed: list[StreamSession] = []
+    for stream in stale:
+        closed.append(
+            await close_session(session, stream, reason=StreamEndReason.SIGNAL_LOST)
+        )
+    return closed
 
 
 async def record_processed_tick(

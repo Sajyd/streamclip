@@ -384,8 +384,16 @@ async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
         removed["storage_assets"] = len(expired_assets)
 
     async with ctx.db.system_tx() as session:
+        from app.services import ingest as ingest_service
         from app.services import ingest_nodes
 
+        stale = await ingest_service.close_stale_sessions(session)
+        orgs = {stream.organization_id for stream in stale}
+        for organization_id in orgs:
+            await ingest_nodes.schedule_idle_termination(
+                session, organization_id=organization_id
+            )
+        removed["stale_sessions"] = len(stale)
         removed["ingest_spots"] = await ingest_nodes.terminate_due_nodes(session, ctx.settings)
 
     log.info("maintenance_cleanup", **removed)

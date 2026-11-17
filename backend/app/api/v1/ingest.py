@@ -378,7 +378,15 @@ async def revoke_ingest_key(principal: CurrentPrincipal, ctx: Ctx, meta: Meta) -
 @router.get("/ingest/sessions", response_model=StreamSessionList)
 async def list_ingest_sessions(principal: CurrentPrincipal, ctx: Ctx) -> StreamSessionList:
     _require_ingest_keys()
-    async with ctx.db.tenant_tx(principal.tenant) as session:
+    # system_tx: closing sessions writes status (tenant app role is read-only).
+    async with ctx.db.system_tx() as session:
+        stale = await ingest_service.close_stale_sessions(
+            session, organization_id=principal.organization_id
+        )
+        if stale:
+            await ingest_nodes.schedule_idle_termination(
+                session, organization_id=principal.organization_id
+            )
         items = await ingest_service.list_recent_sessions(session, principal.organization_id)
     return StreamSessionList(items=[_session_out(item) for item in items])
 
