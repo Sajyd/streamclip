@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 
 import {
   issueIngestKeyAction,
@@ -10,7 +10,7 @@ import {
 } from "@/app/actions/ingest";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
-import { Badge, Notice } from "@/components/ui/primitives";
+import { Notice } from "@/components/ui/primitives";
 import { idleState, type FormState } from "@/lib/form-state";
 import { cx, formatDateTime } from "@/lib/format";
 import type { StreamKey } from "@/types/api";
@@ -67,24 +67,35 @@ function IssueOrRotateForm({
   pendingLabel,
   defaultLabel,
   edgeRtmp,
+  onIssued,
+  hideIssuedBanner = false,
 }: {
   action: (state: IssueKeyState, formData: FormData) => Promise<IssueKeyState>;
   submitLabel: string;
   pendingLabel: string;
   defaultLabel?: string;
   edgeRtmp: string | null;
+  onIssued?: (key: StreamKey) => void;
+  /** When parent already shows the clear secret (e.g. onboarding). */
+  hideIssuedBanner?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, INITIAL);
   const issued = state.key;
   const serverUrl = issued?.rtmps_url ?? edgeRtmp;
 
+  useEffect(() => {
+    if (issued?.stream_key) {
+      onIssued?.(issued);
+    }
+  }, [issued, onIssued]);
+
   return (
     <div className="space-y-4">
-      {issued?.stream_key ? (
+      {!hideIssuedBanner && issued?.stream_key ? (
         <div className="space-y-3">
           <Notice tone="warn" title="Copiez ces valeurs maintenant">
-            La clé secrète ne sera plus jamais réaffichée. Dans OBS : Service = Personnalisé,
-            Serveur = URL RTMP ci-dessous, Clé = stream key.
+            La clé secrète ne sera plus jamais réaffichée après l&apos;onboarding. Dans OBS :
+            Service = Personnalisé, Serveur = URL RTMP, Clé = stream key.
           </Notice>
           {serverUrl ? <CopyField label="Serveur OBS / Streamlabs" value={serverUrl} /> : null}
           <CopyField label="Clé de stream" value={issued.stream_key} />
@@ -133,6 +144,9 @@ export function StreamKeyManager({
   existingKey,
   timeZone,
   defaultLabel,
+  onIssued,
+  compact = false,
+  hideIssuedBanner = false,
 }: {
   canManage: boolean;
   ingestOnline: boolean;
@@ -140,25 +154,30 @@ export function StreamKeyManager({
   existingKey: StreamKey | null;
   timeZone?: string;
   defaultLabel?: string;
+  onIssued?: (key: StreamKey) => void;
+  /** Shorter copy for onboarding. */
+  compact?: boolean;
+  hideIssuedBanner?: boolean;
 }) {
   const edgeRtmp = existingKey?.rtmps_url ?? rtmpUrl;
 
   return (
     <div className="space-y-4">
-      <Notice tone="neutral" title="Connexion OBS / Streamlabs">
-        Une URL RTMP unique pour tous. Votre clé secrète identifie votre compte : au démarrage du
-        live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le flux
-        automatiquement toutes les 5&nbsp;min.
-      </Notice>
-
-      {!ingestOnline ? (
-        <Notice tone="warn" title="Serveur RTMP hors ligne">
-          Le serveur d&apos;ingestion n&apos;est pas disponible pour le moment. Vous pouvez créer
-          votre clé ; la connexion OBS sera possible dès le retour en ligne.
+      {!compact ? (
+        <Notice tone="neutral" title="Connexion OBS / Streamlabs">
+          Une URL RTMP unique pour tous. Votre clé secrète identifie votre compte : au démarrage du
+          live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le flux
+          automatiquement toutes les 5&nbsp;min.
         </Notice>
       ) : null}
 
-      {edgeRtmp ? (
+      {!ingestOnline ? (
+        <Notice tone="warn" title="Serveur RTMP hors ligne">
+          Vous pouvez créer votre clé ; la connexion OBS sera possible dès le retour en ligne.
+        </Notice>
+      ) : null}
+
+      {edgeRtmp && !compact ? (
         <div className="rounded-2xl border border-white/10 bg-ink-950/70 p-4">
           <CopyField label="Serveur OBS / Streamlabs" value={edgeRtmp} />
           <p className="mt-2 text-xs text-ink-400">
@@ -168,21 +187,23 @@ export function StreamKeyManager({
       ) : null}
 
       {existingKey ? (
-        <div className="space-y-3 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="font-medium text-white">Clé active</span>
-            <Badge>…{existingKey.key_hint}</Badge>
-            {existingKey.label ? <span className="text-ink-400">{existingKey.label}</span> : null}
-          </div>
-          <p className="text-xs text-ink-400">
-            {timeZone
-              ? `Créée le ${formatDateTime(existingKey.created_at, timeZone)}${
-                  existingKey.last_used_at
-                    ? ` · dernière utilisation ${formatDateTime(existingKey.last_used_at, timeZone)}`
-                    : ""
-                }. `
-              : null}
-            Le secret n&apos;est plus affiché — régénérez-le pour en obtenir un nouveau.
+        <div className="space-y-2 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
+          <p className="text-sm font-medium text-white">
+            {compact ? "Une clé existe déjà sur votre compte" : "Clé active"}
+            {!compact && existingKey.label ? (
+              <span className="ml-2 font-normal text-ink-400">· {existingKey.label}</span>
+            ) : null}
+          </p>
+          <p className="text-sm leading-relaxed text-ink-400">
+            {compact
+              ? "Le secret n’est plus visible ici. Régénérez pour l’afficher pendant l’onboarding, puis continuez."
+              : timeZone
+                ? `Créée le ${formatDateTime(existingKey.created_at, timeZone)}${
+                    existingKey.last_used_at
+                      ? ` · dernière utilisation ${formatDateTime(existingKey.last_used_at, timeZone)}`
+                      : ""
+                  }. Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau.`
+                : "Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau."}
           </p>
         </div>
       ) : null}
@@ -191,29 +212,35 @@ export function StreamKeyManager({
         !existingKey ? (
           <IssueOrRotateForm
             action={issueIngestKeyAction}
-            submitLabel="Créer ma clé d'ingestion"
+            submitLabel="Créer ma clé"
             pendingLabel="Création…"
             defaultLabel={defaultLabel}
             edgeRtmp={edgeRtmp}
+            onIssued={onIssued}
+            hideIssuedBanner={hideIssuedBanner}
           />
         ) : (
           <div className="space-y-4">
             <IssueOrRotateForm
               action={rotateIngestKeyAction}
-              submitLabel="Régénérer la clé"
+              submitLabel={compact ? "Régénérer pour afficher le secret" : "Régénérer la clé"}
               pendingLabel="Régénération…"
               defaultLabel={existingKey.label || defaultLabel}
               edgeRtmp={edgeRtmp}
+              onIssued={onIssued}
+              hideIssuedBanner={hideIssuedBanner}
             />
-            <Form
-              action={revokeIngestKeyAction as (state: FormState) => Promise<FormState>}
-              className="space-y-2"
-            >
-              <SubmitButton variant="danger" pendingLabel="Révocation…">
-                Révoquer la clé
-              </SubmitButton>
-              <FormMessage />
-            </Form>
+            {!compact ? (
+              <Form
+                action={revokeIngestKeyAction as (state: FormState) => Promise<FormState>}
+                className="space-y-2"
+              >
+                <SubmitButton variant="danger" pendingLabel="Révocation…">
+                  Révoquer la clé
+                </SubmitButton>
+                <FormMessage />
+              </Form>
+            ) : null}
           </div>
         )
       ) : (
@@ -221,6 +248,26 @@ export function StreamKeyManager({
           Seul un administrateur de l&apos;espace peut créer ou régénérer la clé.
         </p>
       )}
+    </div>
+  );
+}
+
+/** Sticky reminder of RTMP server + clear secret during onboarding only. */
+export function OnboardingCredsBanner({
+  server,
+  streamKey,
+}: {
+  server: string | null;
+  streamKey: string | null;
+}) {
+  if (!server && !streamKey) return null;
+  return (
+    <div className="mb-5 space-y-3 rounded-2xl border border-warn-400/35 bg-warn-400/10 p-4">
+      <p className="text-xs font-semibold tracking-wide text-warn-400 uppercase">
+        À coller dans OBS — disparaît à la fin de l’onboarding
+      </p>
+      {server ? <CopyField label="Serveur RTMP STREAMCLIP" value={server} /> : null}
+      {streamKey ? <CopyField label="Clé secrète" value={streamKey} /> : null}
     </div>
   );
 }

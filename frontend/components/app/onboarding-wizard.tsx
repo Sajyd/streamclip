@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 
 import { checkoutAction } from "@/app/actions/billing";
 import {
@@ -9,9 +9,20 @@ import {
   saveOnboardingAction,
   type OnboardingPatch,
 } from "@/app/actions/onboarding";
-import { StreamKeyManager } from "@/components/app/ingest-credentials";
+import {
+  CopyField,
+  OnboardingCredsBanner,
+  StreamKeyManager,
+} from "@/components/app/ingest-credentials";
 import { LiveDetector } from "@/components/app/live-detector";
-import { ObsSetupGuide } from "@/components/app/obs-rtmp-guide";
+import {
+  PluginConnectStep,
+  PluginDownloadStep,
+  PluginInstallStep,
+  PluginVerifyStep,
+  StreamlabsConnectStep,
+  type Creds,
+} from "@/components/app/obs-rtmp-guide";
 import { PlanCard } from "@/components/plan-card";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, SubmitButton } from "@/components/ui/form";
@@ -25,27 +36,41 @@ type StepId =
   | "usage"
   | "software"
   | "ingest-key"
-  | "obs-setup"
+  | "plugin-ask"
+  | "plugin-download"
+  | "plugin-install"
+  | "plugin-verify"
+  | "plugin-connect"
+  | "streamlabs-setup"
   | "social"
   | "premium"
   | "live";
 
-const STEPS: StepId[] = [
-  "welcome",
-  "referral",
-  "usage",
-  "software",
-  "ingest-key",
-  "obs-setup",
-  "social",
-  "premium",
-  "live",
-];
+function buildSteps(
+  software: "obs" | "streamlabs" | null,
+  hasPlugin: boolean | null,
+): StepId[] {
+  const head: StepId[] = ["welcome", "referral", "usage", "software", "ingest-key"];
+  const tail: StepId[] = ["social", "premium", "live"];
 
-/** Map legacy step ids saved before the split. */
-function resolveStep(raw: string): StepId {
-  if (raw === "obs-guide") return "ingest-key";
-  if (STEPS.includes(raw as StepId)) return raw as StepId;
+  if (software === "streamlabs") {
+    return [...head, "streamlabs-setup", ...tail];
+  }
+
+  // OBS (default while software unknown: show ask only)
+  const mid: StepId[] = ["plugin-ask"];
+  if (hasPlugin === false) {
+    mid.push("plugin-download", "plugin-install", "plugin-verify");
+  }
+  if (hasPlugin !== null) {
+    mid.push("plugin-connect");
+  }
+  return [...head, ...mid, ...tail];
+}
+
+function resolveStep(raw: string, steps: StepId[]): StepId {
+  if (raw === "obs-guide" || raw === "obs-setup") return "ingest-key";
+  if (steps.includes(raw as StepId)) return raw as StepId;
   return "welcome";
 }
 
@@ -79,20 +104,29 @@ const SOCIALS = [
   { id: "instagram" as const, label: "Instagram" },
 ];
 
-function Progress({ step }: { step: StepId }) {
-  const index = Math.max(0, STEPS.indexOf(step));
+const SETUP_STEPS = new Set<StepId>([
+  "plugin-ask",
+  "plugin-download",
+  "plugin-install",
+  "plugin-verify",
+  "plugin-connect",
+  "streamlabs-setup",
+]);
+
+function Progress({ step, steps }: { step: StepId; steps: StepId[] }) {
+  const index = Math.max(0, steps.indexOf(step));
   return (
     <div className="mb-8">
       <div className="flex items-center justify-between text-xs text-ink-400">
         <span>
-          Étape {index + 1} / {STEPS.length}
+          Étape {index + 1} / {steps.length}
         </span>
-        <span>{Math.round(((index + 1) / STEPS.length) * 100)} %</span>
+        <span>{Math.round(((index + 1) / steps.length) * 100)} %</span>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-800">
         <div
           className="h-full rounded-full bg-gradient-to-r from-brand-500 to-flare-400 transition-all duration-500"
-          style={{ width: `${((index + 1) / STEPS.length) * 100}%` }}
+          style={{ width: `${((index + 1) / steps.length) * 100}%` }}
         />
       </div>
     </div>
@@ -139,12 +173,20 @@ function ChoiceGrid({
   );
 }
 
-function StepHeader({ eyebrow, title, hint }: { eyebrow: string; title: string; hint?: string }) {
+function StepHeader({
+  eyebrow,
+  title,
+  hint,
+}: {
+  eyebrow: string;
+  title: string;
+  hint?: string;
+}) {
   return (
     <div>
       <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">{eyebrow}</p>
       <CardTitle className="mt-2 text-xl sm:text-2xl">{title}</CardTitle>
-      {hint ? <CardDescription className="mt-2">{hint}</CardDescription> : null}
+      {hint ? <CardDescription className="mt-2 max-w-xl">{hint}</CardDescription> : null}
     </div>
   );
 }
@@ -174,15 +216,30 @@ export function OnboardingWizard({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState<StepId>(
-    initial.completed ? "live" : resolveStep(initial.step),
-  );
   const [referral, setReferral] = useState<string | null>(initial.referral_source);
   const [usage, setUsage] = useState<string | null>(initial.usage);
   const [software, setSoftware] = useState<"obs" | "streamlabs" | null>(initial.software);
+  const [hasPlugin, setHasPlugin] = useState<boolean | null>(null);
   const [socials, setSocials] = useState<Array<"youtube" | "tiktok" | "instagram">>(
     initial.social_platforms,
   );
+  /** Clear secret kept only in memory until onboarding ends. */
+  const [creds, setCreds] = useState<Creds | null>(null);
+
+  const steps = useMemo(() => buildSteps(software, hasPlugin), [software, hasPlugin]);
+  const [step, setStep] = useState<StepId>(() =>
+    initial.completed ? "live" : resolveStep(initial.step, buildSteps(initial.software, null)),
+  );
+
+  function captureKey(key: StreamKey) {
+    const server = key.rtmps_url ?? ingestRtmpUrl;
+    if (!key.stream_key || !server) return;
+    setCreds({ server, streamKey: key.stream_key });
+  }
+
+  function wipeSecret() {
+    setCreds(null);
+  }
 
   function persist(patch: OnboardingPatch, next?: StepId) {
     setError(null);
@@ -198,8 +255,9 @@ export function OnboardingWizard({
   }
 
   function goNext() {
-    const index = STEPS.indexOf(step);
-    const next = STEPS[Math.min(index + 1, STEPS.length - 1)] ?? "live";
+    const index = steps.indexOf(step);
+    const next = steps[Math.min(index + 1, steps.length - 1)] ?? "live";
+
     if (step === "welcome") {
       persist({ step: next }, next);
       return;
@@ -229,14 +287,29 @@ export function OnboardingWizard({
       return;
     }
     if (step === "ingest-key") {
-      if (!ingestKey) {
+      if (!ingestKey && !creds) {
         setError("Créez votre clé pour continuer.");
         return;
       }
-      persist({ step: next, ingest_ready: true, software: software ?? "obs" }, next);
+      if (!creds) {
+        setError("Affichez le secret (créer ou régénérer) pour le garder sous la main.");
+        return;
+      }
+      const afterKey: StepId = software === "streamlabs" ? "streamlabs-setup" : "plugin-ask";
+      persist({ step: afterKey, ingest_ready: true, software: software ?? "obs" }, afterKey);
       return;
     }
-    if (step === "obs-setup") {
+    if (step === "plugin-ask") {
+      setError("Répondez oui ou non pour continuer.");
+      return;
+    }
+    if (
+      step === "plugin-download" ||
+      step === "plugin-install" ||
+      step === "plugin-verify" ||
+      step === "plugin-connect" ||
+      step === "streamlabs-setup"
+    ) {
       persist({ step: next, ingest_ready: true }, next);
       return;
     }
@@ -249,10 +322,23 @@ export function OnboardingWizard({
     }
   }
 
+  function answerPlugin(installed: boolean) {
+    setHasPlugin(installed);
+    setError(null);
+    const next: StepId = installed ? "plugin-connect" : "plugin-download";
+    persist({ step: next, ingest_ready: true }, next);
+  }
+
   function goBack() {
-    const index = STEPS.indexOf(step);
+    const index = steps.indexOf(step);
     if (index <= 0) return;
-    const previous = STEPS[index - 1];
+    // Leaving plugin path resets the ask so progress recalculates cleanly
+    if (step === "plugin-connect" || step === "plugin-download") {
+      setHasPlugin(null);
+      setStep("plugin-ask");
+      return;
+    }
+    const previous = steps[index - 1];
     if (!previous) return;
     setError(null);
     setStep(previous);
@@ -260,6 +346,7 @@ export function OnboardingWizard({
 
   function finish(liveDetected = false) {
     setError(null);
+    wipeSecret();
     startTransition(async () => {
       const result = await completeOnboardingAction({
         live_detected: liveDetected || initial.live_detected,
@@ -282,11 +369,15 @@ export function OnboardingWizard({
   const highlighted =
     plans.find((plan) => plan.code === "creator") ?? plans.find((p) => p.price_cents > 0);
   const freePlan = plans.find((plan) => plan.price_cents === 0);
-  const softLabel = software === "streamlabs" ? "Streamlabs" : "OBS";
+  const showCreds = SETUP_STEPS.has(step) || step === "ingest-key";
 
   return (
     <div className="animate-fade-up">
-      <Progress step={step} />
+      <Progress step={step} steps={steps} />
+
+      {showCreds && creds ? (
+        <OnboardingCredsBanner server={creds.server} streamKey={creds.streamKey} />
+      ) : null}
 
       {step === "welcome" ? (
         <Card className="relative overflow-hidden">
@@ -294,10 +385,10 @@ export function OnboardingWizard({
           <StepHeader
             eyebrow="Bienvenue"
             title={displayName ? `Salut ${displayName}` : "Salut"}
-            hint="On branche votre live en quelques minutes. Vous gardez Twitch / YouTube — STREAMCLIP reçoit une copie."
+            hint="On branche votre live étape par étape. Twitch / YouTube ne changent pas."
           />
           <ul className="relative mt-6 grid gap-2 text-sm text-ink-200 sm:grid-cols-3">
-            {["Clé STREAMCLIP", "Réglage OBS", "Clips prêts"].map((item) => (
+            {["1. Clé", "2. Plugin OBS", "3. Live"].map((item) => (
               <li
                 key={item}
                 className="rounded-2xl border border-white/10 bg-ink-950/50 px-3 py-2.5 text-center font-medium"
@@ -333,14 +424,17 @@ export function OnboardingWizard({
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
             {(
               [
-                { id: "obs" as const, title: "OBS Studio", body: "Le plus courant" },
-                { id: "streamlabs" as const, title: "Streamlabs", body: "All-in-one" },
+                { id: "obs" as const, title: "OBS Studio", body: "Plugin Multiple RTMP" },
+                { id: "streamlabs" as const, title: "Streamlabs", body: "Destination Custom RTMP" },
               ] as const
             ).map((option) => (
               <button
                 key={option.id}
                 type="button"
-                onClick={() => setSoftware(option.id)}
+                onClick={() => {
+                  setSoftware(option.id);
+                  setHasPlugin(null);
+                }}
                 className={cx(
                   "rounded-3xl border p-5 text-left transition-all",
                   software === option.id
@@ -359,36 +453,106 @@ export function OnboardingWizard({
       {step === "ingest-key" ? (
         <Card>
           <StepHeader
-            eyebrow="Étape 5 · Clé"
-            title="Créez votre clé STREAMCLIP"
-            hint="Un clic. Copiez la clé tout de suite — elle ne s’affiche qu’une fois."
+            eyebrow="Clé STREAMCLIP"
+            title="Créez votre clé"
+            hint="Un clic. Le serveur et la clé restent visibles jusqu’à la fin de l’onboarding."
           />
-          <div className="mt-6">
-            <StreamKeyManager
-              canManage={canManage}
-              ingestOnline={ingestOnline}
-              rtmpUrl={ingestRtmpUrl}
-              existingKey={ingestKey}
-              defaultLabel={software === "streamlabs" ? "Streamlabs" : "OBS"}
-            />
-          </div>
-          {!canManage ? (
-            <p className="mt-4 text-sm text-ink-400">
-              Seul un admin de l’espace peut créer la clé.
-            </p>
-          ) : null}
+          {creds ? (
+            <div className="mt-6 space-y-3 rounded-2xl border border-ok-500/30 bg-ok-500/10 p-4">
+              <p className="text-sm font-semibold text-ok-400">Clé prête — copiez-la</p>
+              <CopyField label="Serveur RTMP" value={creds.server} />
+              <CopyField label="Clé secrète" value={creds.streamKey} />
+            </div>
+          ) : (
+            <div className="mt-6">
+              <StreamKeyManager
+                canManage={canManage}
+                ingestOnline={ingestOnline}
+                rtmpUrl={ingestRtmpUrl}
+                existingKey={ingestKey}
+                defaultLabel={software === "streamlabs" ? "Streamlabs" : "OBS"}
+                onIssued={captureKey}
+                compact
+                hideIssuedBanner
+              />
+            </div>
+          )}
         </Card>
       ) : null}
 
-      {step === "obs-setup" ? (
+      {step === "plugin-ask" ? (
         <Card>
           <StepHeader
-            eyebrow={`Étape 6 · ${softLabel}`}
-            title={`Branchez ${softLabel}`}
-            hint="4 actions. Collez le serveur et la clé de l’étape 5."
+            eyebrow="Multiple RTMP"
+            title="Avez-vous déjà le plugin Multiple RTMP ?"
+            hint="Il s’appelle aussi « Multiple RTMP Outputs » dans OBS."
+          />
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => answerPlugin(true)}
+              className="rounded-3xl border border-white/10 bg-ink-950/50 p-5 text-left transition-all hover:border-brand-400/50 hover:bg-brand-500/10"
+            >
+              <p className="text-lg font-semibold text-white">Oui, déjà installé</p>
+              <p className="mt-1 text-sm text-ink-400">On passe direct à STREAMCLIP</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => answerPlugin(false)}
+              className="rounded-3xl border border-white/10 bg-ink-950/50 p-5 text-left transition-all hover:border-brand-400/50 hover:bg-brand-500/10"
+            >
+              <p className="text-lg font-semibold text-white">Non, on l’installe</p>
+              <p className="mt-1 text-sm text-ink-400">3 étapes courtes + collage de la clé</p>
+            </button>
+          </div>
+        </Card>
+      ) : null}
+
+      {step === "plugin-download" ? (
+        <Card>
+          <StepHeader eyebrow="Installation · 1/3" title="Téléchargement" />
+          <div className="mt-6">
+            <PluginDownloadStep />
+          </div>
+        </Card>
+      ) : null}
+
+      {step === "plugin-install" ? (
+        <Card>
+          <StepHeader eyebrow="Installation · 2/3" title="Installation" />
+          <div className="mt-6">
+            <PluginInstallStep />
+          </div>
+        </Card>
+      ) : null}
+
+      {step === "plugin-verify" ? (
+        <Card>
+          <StepHeader eyebrow="Installation · 3/3" title="Vérification" />
+          <div className="mt-6">
+            <PluginVerifyStep />
+          </div>
+        </Card>
+      ) : null}
+
+      {step === "plugin-connect" ? (
+        <Card>
+          <StepHeader
+            eyebrow="Connexion"
+            title="Collez serveur + clé dans OBS"
+            hint="Le bandeau jaune ci-dessus reste disponible."
           />
           <div className="mt-6">
-            <ObsSetupGuide software={software ?? "obs"} />
+            <PluginConnectStep creds={creds} />
+          </div>
+        </Card>
+      ) : null}
+
+      {step === "streamlabs-setup" ? (
+        <Card>
+          <StepHeader eyebrow="Streamlabs" title="Ajoutez STREAMCLIP" />
+          <div className="mt-6">
+            <StreamlabsConnectStep creds={creds} />
           </div>
         </Card>
       ) : null}
@@ -398,7 +562,7 @@ export function OnboardingWizard({
           <StepHeader
             eyebrow="Réseaux"
             title="Où publiez-vous ?"
-            hint="Optionnel — vous pourrez toujours télécharger vos clips."
+            hint="Optionnel — vous pourrez télécharger vos clips."
           />
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             {SOCIALS.map((platform) => {
@@ -455,7 +619,10 @@ export function OnboardingWizard({
                     type="button"
                     className={buttonClasses({ variant: "secondary", className: "w-full" })}
                     disabled={pending}
-                    onClick={() => persist({ premium_choice: "free", step: "live" }, "live")}
+                    onClick={() => {
+                      wipeSecret();
+                      persist({ premium_choice: "free", step: "live" }, "live");
+                    }}
                   >
                     Rester gratuit
                   </button>
@@ -473,7 +640,10 @@ export function OnboardingWizard({
                       type="button"
                       className={buttonClasses({ variant: "secondary", className: "w-full" })}
                       disabled={pending}
-                      onClick={() => persist({ premium_choice: "free", step: "live" }, "live")}
+                      onClick={() => {
+                        wipeSecret();
+                        persist({ premium_choice: "free", step: "live" }, "live");
+                      }}
                     >
                       Continuer
                     </button>
@@ -482,6 +652,7 @@ export function OnboardingWizard({
                       action={checkoutAction}
                       className="space-y-2"
                       onSubmit={() => {
+                        wipeSecret();
                         void saveOnboardingAction({ premium_choice: "premium", step: "premium" });
                       }}
                     >
@@ -498,7 +669,10 @@ export function OnboardingWizard({
           <button
             type="button"
             className="text-sm text-ink-400 underline-offset-2 hover:text-ink-200 hover:underline"
-            onClick={() => persist({ premium_choice: "free", step: "live" }, "live")}
+            onClick={() => {
+              wipeSecret();
+              persist({ premium_choice: "free", step: "live" }, "live");
+            }}
           >
             Continuer gratuitement
           </button>
@@ -510,7 +684,7 @@ export function OnboardingWizard({
           <StepHeader
             eyebrow="Go live"
             title="Lancez votre live"
-            hint={`Démarrez dans ${softLabel}. On détecte le signal tout seuls.`}
+            hint="Démarrez dans votre logiciel. On détecte le signal automatiquement."
           />
           <div className="mt-6">
             <LiveDetector sessions={sessions} />
@@ -522,9 +696,7 @@ export function OnboardingWizard({
               className={buttonClasses({ variant: "primary" })}
               onClick={() =>
                 finish(
-                  Boolean(
-                    sessions.some((s) => s.status === "live" || s.status === "pending"),
-                  ),
+                  Boolean(sessions.some((s) => s.status === "live" || s.status === "pending")),
                 )
               }
             >
@@ -551,7 +723,7 @@ export function OnboardingWizard({
         </p>
       ) : null}
 
-      {step !== "live" && step !== "premium" ? (
+      {step !== "live" && step !== "premium" && step !== "plugin-ask" ? (
         <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
           <button
             type="button"
@@ -572,15 +744,21 @@ export function OnboardingWizard({
               : step === "welcome"
                 ? "C’est parti"
                 : step === "ingest-key"
-                  ? "Clé créée, continuer"
-                  : step === "obs-setup"
+                  ? "Continuer avec cette clé"
+                  : step === "plugin-connect" || step === "streamlabs-setup"
                     ? "C’est branché"
-                    : "Continuer"}
+                    : step === "plugin-download"
+                      ? "Fichier téléchargé"
+                      : step === "plugin-install"
+                        ? "Plugin installé"
+                        : step === "plugin-verify"
+                          ? "Panneau OK"
+                          : "Continuer"}
           </button>
         </div>
       ) : null}
 
-      {step === "premium" ? (
+      {step === "premium" || step === "plugin-ask" ? (
         <div className="mt-6">
           <button
             type="button"
