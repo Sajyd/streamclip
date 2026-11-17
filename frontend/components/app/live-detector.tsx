@@ -48,9 +48,8 @@ export function LiveDetector({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-ok-400">Live détecté</p>
           <p className="text-sm text-ink-200">
-            STREAMCLIP reçoit votre signal
-            {live.protocol ? ` · ${live.protocol.toUpperCase()}` : ""}. Vous pouvez laisser tourner —
-            les clips apparaîtront ici dès qu&apos;ils sont prêts.
+            STREAMCLIP reçoit votre signal. Vous pouvez laisser tourner — les clips apparaîtront ici
+            dès qu&apos;ils sont prêts.
           </p>
         </div>
         <Badge tone="ok">En direct</Badge>
