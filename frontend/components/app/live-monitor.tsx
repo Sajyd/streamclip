@@ -83,8 +83,9 @@ export function LiveMonitor({
     };
   }, [refreshPlayback, refreshHighlights, playerOnly]);
 
+  // Prefer media playlist; master (index) also works once rewritten by the proxy.
   const src =
-    playback.preview_available && playback.status === "live"
+    playback.preview_available && (playback.status === "live" || playback.status === "starting")
       ? `${hlsBase}/index.m3u8`
       : null;
 
@@ -101,22 +102,13 @@ export function LiveMonitor({
 
   if (playerOnly) {
     return (
-      <Card className={cx("flex h-full flex-col p-5", className)}>
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
-            <CardTitle className="mt-2 text-lg">Aperçu</CardTitle>
-            <CardDescription>Votre diffusion en cours, en direct.</CardDescription>
-          </div>
-          <Link
-            href="/live"
-            className="shrink-0 text-xs font-medium text-brand-300 hover:text-brand-200"
-          >
-            Agrandir
-          </Link>
-        </div>
-        <LivePlayer src={src} status={playback.status} message={friendlyMessage} />
-      </Card>
+      <LivePlayer
+        className={className}
+        fill
+        src={src}
+        status={playback.status}
+        message={friendlyMessage}
+      />
     );
   }
 

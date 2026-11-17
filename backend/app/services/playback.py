@@ -290,8 +290,17 @@ async def proxy_hls(
             ctx.settings.ingest_hook_secret.get_secret_value()
         )
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.get(url, headers=headers)
+            # MediaMTX: index.m3u8 (master) may 404 briefly; stream.m3u8 is the media playlist.
+            if (
+                response.status_code == 404
+                and file_path.rstrip("/").endswith("index.m3u8")
+            ):
+                alt = agent_hls_url(
+                    host, info.public_id, file_path="stream.m3u8", token=token
+                )
+                response = await client.get(alt, headers=headers)
     except httpx.HTTPError as exc:
         log.warning("playback.proxy_failed", error=str(exc), host=host)
         raise ServiceUnavailableError(
@@ -305,6 +314,12 @@ async def proxy_hls(
             code="preview_not_found",
         )
     if response.status_code >= 400:
+        log.warning(
+            "playback.proxy_bad_status",
+            status=response.status_code,
+            host=host,
+            path=file_path,
+        )
         raise ServiceUnavailableError(
             "Aperçu temporairement indisponible.", code="preview_unavailable"
         )
@@ -313,4 +328,19 @@ async def proxy_hls(
         if file_path.endswith(".m3u8")
         else "video/mp2t"
     )
-    return response.content, content_type
+    body = response.content
+    # Rewrite absolute URIs so the browser stays on the Next.js proxy.
+    if file_path.endswith(".m3u8") or "mpegurl" in content_type:
+        text = body.decode("utf-8", errors="replace")
+        if text.lstrip().startswith("#EXTM3U"):
+            lines: list[str] = []
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    path_only = stripped.split("?", 1)[0]
+                    if path_only.startswith("http://") or path_only.startswith("https://") or path_only.startswith("/"):
+                        line = path_only.rsplit("/", 1)[-1]
+                lines.append(line)
+            body = "\n".join(lines).encode("utf-8")
+            content_type = "application/vnd.apple.mpegurl"
+    return body, content_type

@@ -174,7 +174,7 @@ async function Dashboard() {
         </Notice>
       ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid items-stretch gap-5 lg:grid-cols-2">
         {capabilities.ingest_keys ? (
           <LiveMonitor
             initialPlayback={playback}
@@ -183,13 +183,9 @@ async function Dashboard() {
             playerOnly
           />
         ) : (
-          <Card className="flex h-full flex-col p-5">
-            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
-            <CardTitle className="mt-2 text-lg">Aperçu</CardTitle>
-            <CardDescription className="mt-1">
-              L&apos;aperçu live n&apos;est pas disponible ici.
-            </CardDescription>
-          </Card>
+          <div className="flex min-h-[22rem] items-center justify-center rounded-2xl border border-white/10 bg-ink-950 px-6 text-center text-sm text-ink-400">
+            Aperçu live indisponible
+          </div>
         )}
         <QuotaSummary overview={overview} timeZone={timeZone} />
         <NotificationsCard notifications={notifications} timeZone={timeZone} />
