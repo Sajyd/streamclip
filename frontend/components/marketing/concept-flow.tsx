@@ -20,7 +20,7 @@ function ObsGlyph() {
   );
 }
 
-function StreamclipGlyph({ pulse }: { pulse: boolean }) {
+function StreamclipGlyph({ pulse = false }: { pulse?: boolean } = {}) {
   return (
     <svg viewBox="0 0 72 72" className="size-16" aria-hidden>
       <circle cx="36" cy="36" r="30" fill="#0013de" opacity="0.18" />
