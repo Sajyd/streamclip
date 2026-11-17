@@ -71,8 +71,8 @@ export function Logo({ className }: { className?: string }) {
       <svg viewBox="0 0 32 32" aria-hidden className="size-7">
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#0021f3" />
-            <stop offset="1" stopColor="#0013de" />
+            <stop offset="0" stopColor="#7a8cdd" />
+            <stop offset="1" stopColor="#5c70d4" />
           </linearGradient>
         </defs>
         <rect x="8" y="2" width="16" height="28" rx="5" fill={`url(#${gradientId})`} />

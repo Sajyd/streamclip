@@ -132,7 +132,7 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
         <section className="relative overflow-hidden">
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_at_center,rgba(0,19,222,0.22),transparent_65%)]"
+            className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_at_center,rgba(92,112,212,0.2),transparent_65%)]"
           />
           <div className="relative mx-auto grid w-full max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10 lg:py-24">
             <div className="animate-fade-up">
@@ -248,7 +248,7 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
             <div className="surface relative overflow-hidden px-6 py-12 sm:px-10">
               <div
                 aria-hidden
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(0,19,222,0.28),transparent_60%)]"
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(92,112,212,0.24),transparent_60%)]"
               />
               <div className="relative">
                 <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
