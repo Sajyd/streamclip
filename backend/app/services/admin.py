@@ -201,6 +201,28 @@ async def _count_between(
     return int((await session.execute(statement)).scalar_one())
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _truncate(value: datetime, trunc: str) -> datetime:
+    value = _as_utc(value)
+    if trunc == "hour":
+        return value.replace(minute=0, second=0, microsecond=0)
+    if trunc == "day":
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if trunc == "month":
+        return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(trunc)
+
+
+def _bucket_key(value: datetime, trunc: str) -> int:
+    """Stable lookup key so PG buckets match the Python-filled timeline."""
+    return int(_truncate(value, trunc).timestamp())
+
+
 async def _series(
     session: Any,
     *,
@@ -209,8 +231,10 @@ async def _series(
     end: datetime,
     trunc: str,
     extra: tuple[Any, ...] = (),
-) -> dict[datetime, int]:
-    bucket = func.date_trunc(trunc, column)
+) -> dict[int, int]:
+    # Truncate in UTC so buckets match the Python timeline regardless of
+    # the database session TimeZone.
+    bucket = func.date_trunc(trunc, func.timezone("UTC", column))
     statement = (
         select(bucket.label("bucket"), func.count().label("n"))
         .where(column >= start, column < end, *extra)
@@ -218,49 +242,33 @@ async def _series(
         .order_by(bucket)
     )
     rows = (await session.execute(statement)).all()
-    out: dict[datetime, int] = {}
+    out: dict[int, int] = {}
     for bucket_at, n in rows:
-        if bucket_at.tzinfo is None:
-            bucket_at = bucket_at.replace(tzinfo=UTC)
-        out[bucket_at] = int(n)
+        out[_bucket_key(bucket_at, trunc)] = int(n)
     return out
 
 
 def _fill_series(
-    start: datetime, end: datetime, trunc: str, counts: dict[datetime, int]
+    start: datetime, end: datetime, trunc: str, counts: dict[int, int]
 ) -> list[dict[str, Any]]:
     """Emit every bucket in [start, end) even when the count is zero."""
-    step = {
-        "hour": timedelta(hours=1),
-        "day": timedelta(days=1),
-        "month": timedelta(days=32),  # advanced via date_trunc below
-    }[trunc]
-    # Align to trunc boundary the same way PostgreSQL date_trunc does.
     cursor = _truncate(start, trunc)
     end_aligned = _truncate(end, trunc)
     items: list[dict[str, Any]] = []
     guard = 0
     while cursor < end and cursor <= end_aligned and guard < 400:
-        items.append({"bucket_start": cursor, "count": counts.get(cursor, 0)})
+        items.append(
+            {"bucket_start": cursor, "count": counts.get(_bucket_key(cursor, trunc), 0)}
+        )
         if trunc == "month":
             year = cursor.year + (1 if cursor.month == 12 else 0)
             month = 1 if cursor.month == 12 else cursor.month + 1
             cursor = cursor.replace(year=year, month=month, day=1)
         else:
+            step = timedelta(hours=1) if trunc == "hour" else timedelta(days=1)
             cursor = cursor + step
         guard += 1
     return items
-
-
-def _truncate(value: datetime, trunc: str) -> datetime:
-    value = value.astimezone(UTC)
-    if trunc == "hour":
-        return value.replace(minute=0, second=0, microsecond=0)
-    if trunc == "day":
-        return value.replace(hour=0, minute=0, second=0, microsecond=0)
-    if trunc == "month":
-        return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    raise ValueError(trunc)
 
 
 async def _mrr_cents(session: Any) -> tuple[int, int, list[dict[str, Any]]]:
@@ -582,6 +590,171 @@ async def list_subscriptions(
         "plans": plans,
     }
     return items, next_cursor, summary
+
+
+async def get_live(
+    ctx: AppContext, live_id: uuid.UUID
+) -> dict[str, Any] | None:
+    """Full live detail for admin: session, node, pipeline audit, tasks, highlights."""
+    from app.models.analysis import HighlightCandidate
+    from app.models.media import IngestNode
+    from app.models.system import AuditLog, Task
+
+    owner = _owner_email_subquery()
+    async with ctx.db.system_tx() as session:
+        row = (
+            await session.execute(
+                select(StreamSession, Organization.name, owner.c.owner_email)
+                .join(Organization, Organization.id == StreamSession.organization_id)
+                .outerjoin(owner, owner.c.organization_id == Organization.id)
+                .where(StreamSession.id == live_id)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        stream, org_name, owner_email = row
+        from app.services import ingest_nodes as ingest_nodes_service
+
+        node = await ingest_nodes_service.get_dedicated_node(
+            session, stream.organization_id
+        )
+        if node is None and stream.ingest_node_id:
+            node = await session.get(IngestNode, stream.ingest_node_id)
+
+        events = (
+            await session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.target_type == "stream_session",
+                    AuditLog.target_id == str(live_id),
+                )
+                .order_by(AuditLog.occurred_at.asc())
+                .limit(500)
+            )
+        ).scalars().all()
+        # Also include org-scoped ingest audits around the live window (relay before stream id known)
+        org_events = (
+            await session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.organization_id == stream.organization_id,
+                    AuditLog.action.like("ingest.%"),
+                    AuditLog.occurred_at >= stream.created_at,
+                )
+                .order_by(AuditLog.occurred_at.asc())
+                .limit(500)
+            )
+        ).scalars().all()
+        seen = {e.id for e in events}
+        for e in org_events:
+            if e.id not in seen:
+                events.append(e)
+        events.sort(key=lambda e: e.occurred_at)
+
+        tasks = (
+            await session.execute(
+                select(Task)
+                .where(
+                    Task.organization_id == stream.organization_id,
+                    Task.kind.in_(
+                        (
+                            "ingest.ensure_node",
+                            "analysis.segment",
+                            "analysis.transcribe",
+                        )
+                    ),
+                    Task.created_at >= stream.created_at,
+                )
+                .order_by(Task.created_at.asc())
+                .limit(200)
+            )
+        ).scalars().all()
+        # Keep tasks that reference this session when payload has it
+        session_tasks = []
+        for task in tasks:
+            payload = task.payload if isinstance(task.payload, dict) else {}
+            sid = payload.get("stream_session_id")
+            if sid is None or sid == str(live_id) or task.kind == "ingest.ensure_node":
+                session_tasks.append(task)
+
+        highlights = (
+            await session.execute(
+                select(HighlightCandidate)
+                .where(HighlightCandidate.stream_session_id == live_id)
+                .order_by(HighlightCandidate.score.desc())
+                .limit(50)
+            )
+        ).scalars().all()
+
+    return {
+        "id": stream.id,
+        "organization_id": stream.organization_id,
+        "organization_name": org_name,
+        "owner_email": owner_email,
+        "status": stream.status.value,
+        "end_reason": stream.end_reason.value if stream.end_reason else None,
+        "protocol": stream.protocol.value if stream.protocol else None,
+        "title": stream.title,
+        "started_at": stream.started_at,
+        "ended_at": stream.ended_at,
+        "last_media_at": stream.last_media_at,
+        "media_duration_ms": stream.media_duration_ms,
+        "processed_ms": stream.processed_ms,
+        "clips_count": stream.clips_count,
+        "created_at": stream.created_at,
+        "error_code": stream.error_code,
+        "error_message": stream.error_message,
+        "ingest_node": (
+            {
+                "id": node.id,
+                "name": node.name,
+                "status": node.status.value,
+                "public_hostname": node.public_hostname,
+                "instance_id": node.instance_id,
+                "launch_error": (node.details or {}).get("launch_error")
+                if isinstance(node.details, dict)
+                else None,
+                "launched_at": node.launched_at,
+            }
+            if node is not None
+            else None
+        ),
+        "pipeline_log": [
+            {
+                "id": e.id,
+                "occurred_at": e.occurred_at,
+                "action": e.action,
+                "outcome": e.outcome.value,
+                "ip": str(e.ip) if e.ip else None,
+                "details": e.details if isinstance(e.details, dict) else {},
+            }
+            for e in events
+        ],
+        "tasks": [
+            {
+                "id": t.id,
+                "kind": t.kind,
+                "status": t.status.value,
+                "attempts": t.attempts,
+                "last_error": t.last_error,
+                "created_at": t.created_at,
+                "payload": t.payload if isinstance(t.payload, dict) else {},
+            }
+            for t in session_tasks
+        ],
+        "highlights": [
+            {
+                "id": h.id,
+                "title": h.title,
+                "score": float(h.score),
+                "status": h.status.value,
+                "start_ms": h.start_ms,
+                "end_ms": h.end_ms,
+                "created_at": h.created_at,
+            }
+            for h in highlights
+        ],
+    }
 
 
 async def list_lives(

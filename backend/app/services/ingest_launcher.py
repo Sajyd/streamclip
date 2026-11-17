@@ -133,7 +133,8 @@ trap 'rm -f "$PIDFILE"' EXIT
 while true; do
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
   rm -f "$OUT"
-  if ! ffmpeg -y -rw_timeout 15000000 -i "rtmp://127.0.0.1/${{PATH_NAME}}" \\
+  if ! ffmpeg -y -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \\
+      -rw_timeout 15000000 -i "rtmp://127.0.0.1/${{PATH_NAME}}" \\
       -t 300 -c copy -f mp4 -movflags +faststart "$OUT"; then
     sleep 2
     continue
@@ -161,6 +162,7 @@ chmod +x /usr/local/bin/streamclip-segment-loop
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
 PATH_NAME="$1"
+mkdir -p /var/run/streamclip /var/lib/streamclip/segments
 export HOOK='{hook_q}' EVENT_URL='{event_q}' S3_BUCKET='{bucket_q}' AWS_REGION='{region_q}'
 curl -fsS -X POST -H "Content-Type: application/json" \\
   -H "X-Streamclip-Ingest-Secret: $HOOK" \\

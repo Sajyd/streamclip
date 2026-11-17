@@ -6,12 +6,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import Admin, Ctx, Meta, Staff
+from app.core.errors import NotFoundError
 from app.schemas.api import (
     AdminAnalyticsOut,
     AdminClipList,
     AdminClipOut,
     AdminExportList,
     AdminExportOut,
+    AdminLiveDetailOut,
     AdminLiveList,
     AdminLiveOut,
     AdminSubscriptionList,
@@ -96,6 +98,14 @@ async def list_lives(
         ctx, limit=limit, cursor=cursor, active_only=active_only, search=search
     )
     return AdminLiveList(items=[AdminLiveOut(**item) for item in items], next_cursor=next_cursor)
+
+
+@router.get("/lives/{live_id}", response_model=AdminLiveDetailOut)
+async def get_live(_staff: Staff, ctx: Ctx, live_id: uuid.UUID) -> AdminLiveDetailOut:
+    detail = await admin_service.get_live(ctx, live_id)
+    if detail is None:
+        raise NotFoundError("Live introuvable.", code="live_not_found")
+    return AdminLiveDetailOut(**detail)
 
 
 @router.get("/clips", response_model=AdminClipList)

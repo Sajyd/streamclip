@@ -508,6 +508,54 @@ class AdminLiveList(ApiModel):
     next_cursor: uuid.UUID | None
 
 
+class AdminLivePipelineEventOut(ApiModel):
+    id: uuid.UUID
+    occurred_at: datetime
+    action: str
+    outcome: str
+    ip: str | None
+    details: dict
+
+
+class AdminLiveTaskOut(ApiModel):
+    id: uuid.UUID
+    kind: str
+    status: str
+    attempts: int
+    last_error: str | None
+    created_at: datetime
+    payload: dict
+
+
+class AdminLiveHighlightOut(ApiModel):
+    id: uuid.UUID
+    title: str
+    score: float
+    status: str
+    start_ms: int
+    end_ms: int
+    created_at: datetime
+
+
+class AdminLiveNodeOut(ApiModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    public_hostname: str | None
+    instance_id: str | None
+    launch_error: str | None
+    launched_at: datetime | None
+
+
+class AdminLiveDetailOut(AdminLiveOut):
+    error_code: str | None = None
+    error_message: str | None = None
+    ingest_node: AdminLiveNodeOut | None = None
+    pipeline_log: list[AdminLivePipelineEventOut] = []
+    tasks: list[AdminLiveTaskOut] = []
+    highlights: list[AdminLiveHighlightOut] = []
+
+
 class AdminClipOut(ApiModel):
     id: uuid.UUID
     organization_id: uuid.UUID

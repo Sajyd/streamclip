@@ -32,9 +32,41 @@ from app.schemas.api import (
     StreamSessionList,
     StreamSessionOut,
 )
+from app.models.enums import ActorType, AuditOutcome
 from app.services import ingest as ingest_service
 from app.services import ingest_nodes
+from app.services.audit import RequestMeta, audit
 from app.services.rtmp_resolve_page import render_resolve_page
+
+
+def _hook_meta(request: Request) -> RequestMeta:
+    return RequestMeta(
+        ip=request.client.host if request.client else None,
+        request_id=getattr(request.state, "request_id", None),
+    )
+
+
+def _pipeline_audit(
+    session,
+    action: str,
+    *,
+    organization_id,
+    stream_id,
+    request: Request,
+    details: dict | None = None,
+    outcome: AuditOutcome = AuditOutcome.SUCCESS,
+) -> None:
+    audit(
+        session,
+        action,
+        actor_type=ActorType.INGEST_NODE,
+        organization_id=organization_id,
+        target_type="stream_session",
+        target_id=stream_id,
+        outcome=outcome,
+        meta=_hook_meta(request),
+        details=details or {},
+    )
 
 router = APIRouter(tags=["ingest"])
 # Memorable public URL mounted at app root: GET /rtmp?key=…
@@ -433,6 +465,20 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
             organization_id=key.organization_id,
             idempotency_key=f"ensure-node:{key.organization_id}",
         )
+        _pipeline_audit(
+            session,
+            "ingest.publish_auth",
+            organization_id=key.organization_id,
+            stream_id=stream.id,
+            request=request,
+            details={
+                "path": body.path,
+                "protocol": body.protocol,
+                "ip": body.ip,
+                "node_id": str(node.id) if node else None,
+                "node_host": node.public_hostname if node else None,
+            },
+        )
     # All plans: start the spot before the edge asks for a relay target.
     from app.tasks.queue import run_due_tasks
 
@@ -476,31 +522,78 @@ async def relay_target(
                 session, ctx.settings, organization_id=key.organization_id
             )
         except PermissionDeniedError as exc:
+            _pipeline_audit(
+                session,
+                "ingest.relay_target",
+                organization_id=key.organization_id,
+                stream_id=None,
+                request=request,
+                outcome=AuditOutcome.FAILURE,
+                details={"path": path, "error": "forbidden"},
+            )
             return IngestRelayTargetOut(
                 status="unavailable",
                 rtmp_push_url=None,
                 message=str(exc.message) if hasattr(exc, "message") else "Accès refusé.",
             )
-    if result.status == "ready" and result.rtmp_url:
-        # Push to the same path the edge received so dedicated auth still works.
-        push = result.rtmp_url.rstrip("/")
-        # result.rtmp_url is rtmp://ip:1935/live — append remainder of path after "live"
-        parts = [p for p in path.strip("/").split("/") if p]
-        if len(parts) >= 2 and parts[0] == "live":
-            suffix = "/".join(parts[1:])
-            push_url = f"{push}/{suffix}"
-        else:
-            push_url = f"{push}/{path.strip('/')}"
-        return IngestRelayTargetOut(
-            status="ready",
-            rtmp_push_url=push_url,
-            message="Relay prêt.",
+        stream = (
+            await session.execute(
+                select(StreamSession)
+                .where(
+                    StreamSession.organization_id == key.organization_id,
+                    StreamSession.stream_key_id == key.id,
+                    StreamSession.status.in_(
+                        (
+                            StreamSessionStatus.PENDING,
+                            StreamSessionStatus.LIVE,
+                            StreamSessionStatus.INTERRUPTED,
+                            StreamSessionStatus.FINALIZING,
+                        )
+                    ),
+                )
+                .order_by(StreamSession.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        push_url: str | None = None
+        if result.status == "ready" and result.rtmp_url:
+            push = result.rtmp_url.rstrip("/")
+            parts = [p for p in path.strip("/").split("/") if p]
+            if len(parts) >= 2 and parts[0] == "live":
+                suffix = "/".join(parts[1:])
+                push_url = f"{push}/{suffix}"
+            else:
+                push_url = f"{push}/{path.strip('/')}"
+        _pipeline_audit(
+            session,
+            "ingest.relay_target",
+            organization_id=key.organization_id,
+            stream_id=stream.id if stream else None,
+            request=request,
+            outcome=(
+                AuditOutcome.SUCCESS
+                if result.status == "ready" and push_url
+                else AuditOutcome.FAILURE
+            ),
+            details={
+                "path": path,
+                "status": result.status,
+                "host": result.public_hostname,
+                "message": result.message,
+                "has_push_url": bool(push_url),
+            },
         )
-    return IngestRelayTargetOut(
-        status=result.status,
-        rtmp_push_url=None,
-        message=result.message,
-    )
+        if push_url:
+            return IngestRelayTargetOut(
+                status="ready",
+                rtmp_push_url=push_url,
+                message="Relay prêt.",
+            )
+        return IngestRelayTargetOut(
+            status=result.status,
+            rtmp_push_url=None,
+            message=result.message,
+        )
 
 
 @router.post("/ingest/hooks/event", response_model=Message)
@@ -581,6 +674,20 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             await ingest_nodes.cancel_idle_termination(
                 session, organization_id=key.organization_id
             )
+        _pipeline_audit(
+            session,
+            f"ingest.event.{event}",
+            organization_id=key.organization_id,
+            stream_id=stream.id,
+            request=request,
+            details={
+                "path": body.path,
+                "sequence": body.sequence,
+                "storage_key": body.storage_key,
+                "size_bytes": body.size_bytes,
+                "processed_ms": body.processed_ms,
+            },
+        )
         await ingest_nodes.terminate_due_nodes(session, ctx.settings)
     if queued_transcription:
         # Serverless: run newly queued analysis tasks before the response returns.

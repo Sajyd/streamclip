@@ -82,26 +82,28 @@ async function Lives({ searchParams }: { searchParams: SearchParams }) {
         <ul className="space-y-3">
           {items.map((item) => (
             <li key={item.id}>
-              <Card className="p-5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="min-w-0 truncate text-sm font-medium text-white">
-                    {item.title || "Live sans titre"}
+              <Link href={`/admin/lives/${item.id}`} className="block">
+                <Card className="p-5 transition hover:border-ink-500">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="min-w-0 truncate text-sm font-medium text-white">
+                      {item.title || "Live sans titre"}
+                    </p>
+                    <StatusBadge status={item.status} />
+                    {item.protocol ? (
+                      <span className="text-xs uppercase text-ink-400">{item.protocol}</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1.5 text-xs text-ink-400">
+                    {item.owner_email ?? "—"} · {item.organization_name} ·{" "}
+                    {item.started_at
+                      ? `démarré ${formatDateTime(item.started_at, timeZone)}`
+                      : `créé ${formatDateTime(item.created_at, timeZone)}`}
+                    {item.ended_at ? ` · terminé ${formatDateTime(item.ended_at, timeZone)}` : ""} ·{" "}
+                    {formatDuration(Math.floor(item.processed_ms / 1000))} traités ·{" "}
+                    {item.clips_count} clip{item.clips_count > 1 ? "s" : ""}
                   </p>
-                  <StatusBadge status={item.status} />
-                  {item.protocol ? (
-                    <span className="text-xs text-ink-400 uppercase">{item.protocol}</span>
-                  ) : null}
-                </div>
-                <p className="mt-1.5 text-xs text-ink-400">
-                  {item.owner_email ?? "—"} · {item.organization_name} ·{" "}
-                  {item.started_at
-                    ? `démarré ${formatDateTime(item.started_at, timeZone)}`
-                    : `créé ${formatDateTime(item.created_at, timeZone)}`}
-                  {item.ended_at ? ` · terminé ${formatDateTime(item.ended_at, timeZone)}` : ""} ·{" "}
-                  {formatDuration(Math.floor(item.processed_ms / 1000))} traités · {item.clips_count}{" "}
-                  clip{item.clips_count > 1 ? "s" : ""}
-                </p>
-              </Card>
+                </Card>
+              </Link>
             </li>
           ))}
         </ul>

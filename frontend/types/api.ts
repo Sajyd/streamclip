@@ -314,6 +314,46 @@ export type AdminLive = {
 
 export type AdminLiveList = { items: AdminLive[]; next_cursor: string | null };
 
+export type AdminLiveDetail = AdminLive & {
+  error_code: string | null;
+  error_message: string | null;
+  ingest_node: {
+    id: string;
+    name: string;
+    status: string;
+    public_hostname: string | null;
+    instance_id: string | null;
+    launch_error: string | null;
+    launched_at: string | null;
+  } | null;
+  pipeline_log: Array<{
+    id: string;
+    occurred_at: string;
+    action: string;
+    outcome: string;
+    ip: string | null;
+    details: Record<string, unknown>;
+  }>;
+  tasks: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    attempts: number;
+    last_error: string | null;
+    created_at: string;
+    payload: Record<string, unknown>;
+  }>;
+  highlights: Array<{
+    id: string;
+    title: string;
+    score: number;
+    status: string;
+    start_ms: number;
+    end_ms: number;
+    created_at: string;
+  }>;
+};
+
 export type AdminClip = {
   id: string;
   organization_id: string;

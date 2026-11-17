@@ -12,6 +12,9 @@ const PERIODS: { value: AdminAnalyticsPeriod; label: string }[] = [
   { value: "year", label: "Année" },
 ];
 
+/** Chart plot area height in pixels (must match the CSS height class). */
+const CHART_HEIGHT_PX = 144;
+
 function Delta({ current, previous }: { current: number; previous: number }) {
   const delta = deltaLabel(current, previous);
   return (
@@ -39,32 +42,52 @@ function SeriesChart({
   label: string;
   timeZone: string;
 }) {
-  const values = series.map((bucket) => bucket[field]);
-  const max = Math.max(...values, 1);
+  const values = series.map((bucket) => Number(bucket[field]) || 0);
+  const max = Math.max(0, ...values);
+  const scale = max > 0 ? max : 1;
+
   return (
     <Card className="p-5">
       <CardTitle>{label}</CardTitle>
       <CardDescription className="mt-1">
         {series.length} points · max {max}
       </CardDescription>
-      <div className="mt-4 flex h-36 items-end gap-1">
-        {series.map((bucket) => {
-          const value = bucket[field];
-          const height = Math.max(4, Math.round((value / max) * 100));
-          return (
-            <div
-              key={`${field}-${bucket.bucket_start}`}
-              className="group relative flex min-w-0 flex-1 flex-col items-center justify-end"
-              title={`${formatDateTime(bucket.bucket_start, timeZone)} : ${value}`}
-            >
+      {series.length === 0 ? (
+        <p className="mt-6 text-sm text-ink-400">Aucune donnée sur cette période.</p>
+      ) : (
+        <div
+          className="mt-4 flex items-end gap-px sm:gap-1"
+          style={{ height: CHART_HEIGHT_PX }}
+          role="img"
+          aria-label={`${label} : maximum ${max}`}
+        >
+          {series.map((bucket, index) => {
+            const value = values[index] ?? 0;
+            const barHeight =
+              max === 0
+                ? 2
+                : Math.max(value > 0 ? 6 : 2, Math.round((value / scale) * CHART_HEIGHT_PX));
+            const tip = `${formatDateTime(bucket.bucket_start, timeZone)} : ${value}`;
+            return (
               <div
-                className="w-full rounded-t-md bg-brand-500/70 transition-colors group-hover:bg-brand-400"
-                style={{ height: `${height}%` }}
-              />
-            </div>
-          );
-        })}
-      </div>
+                key={`${field}-${bucket.bucket_start}`}
+                className="group relative flex h-full min-w-0 flex-1 flex-col justify-end"
+                title={tip}
+              >
+                <div
+                  className={cx(
+                    "w-full rounded-t-sm transition-colors",
+                    value > 0
+                      ? "bg-brand-500/80 group-hover:bg-brand-400"
+                      : "bg-ink-700 group-hover:bg-ink-600",
+                  )}
+                  style={{ height: barHeight }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Card>
   );
 }

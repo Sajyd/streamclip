@@ -172,6 +172,7 @@ locals {
     #!/bin/bash
     PATH_NAME="$1"
     SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+    mkdir -p /var/run/streamclip
     PIDFILE="/var/run/streamclip/relay_$${SAFE}.pid"
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
       exit 0
@@ -197,14 +198,20 @@ locals {
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
       -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
       "$EVENT_URL" || true
-    exec ffmpeg -hide_banner -loglevel warning -rw_timeout 15000000 \
-      -i "rtmp://127.0.0.1/$PATH_NAME" -c copy -f flv "$TARGET"
+    # genpts/igndts: OBS H264 DTS jumps otherwise kill -c copy within seconds
+    exec ffmpeg -hide_banner -loglevel warning \
+      -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
+      -rw_timeout 15000000 \
+      -i "rtmp://127.0.0.1/$PATH_NAME" \
+      -c copy -f flv -flvflags no_duration_filesize \
+      "$TARGET"
     RELAY
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-relay
     chmod +x /usr/local/bin/streamclip-edge-relay
 
     cat > /usr/local/bin/streamclip-edge-on-ready <<ONREADY
     #!/bin/bash
+    mkdir -p /var/run/streamclip
     export HOOK='$HOOK' EVENT_URL='$EVENT_URL' RELAY_URL='$RELAY_URL'
     nohup /usr/local/bin/streamclip-edge-relay "\$1" >>/var/log/streamclip-relay.log 2>&1 &
     ONREADY
