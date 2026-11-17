@@ -1,27 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink-950: #05070c;
-  --color-ink-900: #0a0e16;
-  --color-ink-850: #0f1420;
-  --color-ink-800: #151b2a;
-  --color-ink-700: #1e2740;
-  --color-ink-600: #2a3552;
-  --color-ink-500: #4a5878;
-  --color-ink-400: #7b8aaa;
-  --color-ink-300: #a8b4cc;
-  --color-ink-200: #d0d8e8;
-  --color-ink-100: #eef2f8;
+  /* Near-black surfaces with navy undertone from the brand palette. */
+  --color-ink-950: #010014;
+  --color-ink-900: #030025;
+  --color-ink-850: #05014a;
+  --color-ink-800: #060158;
+  --color-ink-700: #010079;
+  --color-ink-600: #0a1a9a;
+  --color-ink-500: #3d4eb8;
+  --color-ink-400: #7b88d4;
+  --color-ink-300: #a8b2e4;
+  --color-ink-200: #d0d6f0;
+  --color-ink-100: #eef0fa;
 
-  --color-brand-200: #bfdbfe;
-  --color-brand-300: #93c5fd;
-  --color-brand-400: #60a5fa;
-  --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
+  /* Exact brand ramp from the provided 5-stop blue palette. */
+  --color-brand-200: #9aabff;
+  --color-brand-300: #6b82ff;
+  --color-brand-400: #0021f3;
+  --color-brand-500: #0013de;
+  --color-brand-600: #0006b1;
+  --color-brand-700: #05014a;
 
-  --color-flare-400: #38bdf8;
-  --color-flare-500: #0ea5e9;
+  --color-flare-400: #3358ff;
+  --color-flare-500: #0021f3;
 
   --color-ok-400: #4ade80;
   --color-ok-500: #22c55e;
@@ -93,25 +95,15 @@
   }
 }
 
-@keyframes float-y-slow {
-  0%,
-  100% {
-    transform: translateY(0) rotateX(8deg) rotateY(-18deg);
-  }
-  50% {
-    transform: translateY(-8px) rotateX(8deg) rotateY(-18deg);
-  }
-}
-
 @keyframes soft-pulse {
   0%,
   100% {
-    opacity: 0.45;
+    opacity: 0.4;
     transform: scale(1);
   }
   50% {
-    opacity: 0.75;
-    transform: scale(1.05);
+    opacity: 0.7;
+    transform: scale(1.06);
   }
 }
 
@@ -126,7 +118,7 @@
 }
 
 @utility text-gradient {
-  background-image: linear-gradient(105deg, var(--color-brand-300), var(--color-flare-400));
+  background-image: linear-gradient(105deg, var(--color-brand-300), var(--color-brand-400));
   background-clip: text;
   color: transparent;
 }
@@ -134,13 +126,13 @@
 @utility surface {
   background:
     linear-gradient(165deg, color-mix(in oklab, white 6%, transparent), transparent 42%),
-    color-mix(in oklab, var(--color-ink-850) 92%, transparent);
+    color-mix(in oklab, var(--color-ink-850) 88%, transparent);
   border: 1px solid color-mix(in oklab, white 10%, transparent);
   border-radius: 1.25rem;
   box-shadow:
     0 1px 0 color-mix(in oklab, white 8%, transparent) inset,
     0 18px 40px -24px color-mix(in oklab, black 80%, transparent),
-    0 0 0 1px color-mix(in oklab, var(--color-brand-500) 6%, transparent);
+    0 0 0 1px color-mix(in oklab, var(--color-brand-500) 8%, transparent);
   backdrop-filter: blur(10px);
 }
 
@@ -153,21 +145,21 @@
 @utility page-glow {
   background-color: var(--color-ink-950);
   background-image:
-    radial-gradient(ellipse 80% 50% at 50% -15%, color-mix(in oklab, var(--color-brand-500) 28%, transparent), transparent 70%),
-    radial-gradient(ellipse 45% 35% at 100% 10%, color-mix(in oklab, var(--color-flare-500) 14%, transparent), transparent 60%),
-    radial-gradient(ellipse 40% 30% at 0% 35%, color-mix(in oklab, var(--color-brand-700) 18%, transparent), transparent 55%),
+    radial-gradient(ellipse 80% 50% at 50% -15%, color-mix(in oklab, var(--color-brand-500) 32%, transparent), transparent 70%),
+    radial-gradient(ellipse 45% 35% at 100% 10%, color-mix(in oklab, var(--color-brand-400) 16%, transparent), transparent 60%),
+    radial-gradient(ellipse 40% 30% at 0% 35%, color-mix(in oklab, var(--color-brand-700) 55%, transparent), transparent 55%),
     linear-gradient(180deg, var(--color-ink-950), var(--color-ink-950));
 }
 
 @utility depth-panel {
   background:
     linear-gradient(160deg, color-mix(in oklab, white 8%, transparent), transparent 45%),
-    linear-gradient(180deg, var(--color-ink-850), var(--color-ink-900));
+    linear-gradient(180deg, var(--color-ink-800), var(--color-ink-900));
   border: 1px solid color-mix(in oklab, white 12%, transparent);
   box-shadow:
     0 1px 0 color-mix(in oklab, white 12%, transparent) inset,
     0 28px 50px -20px color-mix(in oklab, black 85%, transparent),
-    0 10px 24px -12px color-mix(in oklab, var(--color-brand-600) 35%, transparent);
+    0 12px 28px -14px color-mix(in oklab, var(--color-brand-500) 45%, transparent);
 }
 
 @utility animate-fade-up {
@@ -176,10 +168,6 @@
 
 @utility animate-float {
   animation: float-y 5.5s ease-in-out infinite;
-}
-
-@utility animate-float-3d {
-  animation: float-y-slow 6.5s ease-in-out infinite;
 }
 
 @utility animate-soft-pulse {
