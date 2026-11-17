@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 
 import { ClipIllustration } from "@/components/marketing/clip-illustration";
+import { ConceptFlow } from "@/components/marketing/concept-flow";
 import { AvailabilityNotice, Pricing, PricingFallback } from "@/components/marketing/pricing";
 import { SiteFooter, SiteHeader } from "@/components/marketing/site-chrome";
 import { ButtonLink } from "@/components/ui/button";
@@ -13,15 +14,15 @@ const STEPS = [
   },
   {
     title: "Votre live est analysé en continu",
-    body: "Dès le démarrage, votre instance dédiée analyse parole, réactions et image toutes les 5 minutes pour repérer les moments viraux.",
+    body: "Parole, réactions et image sont croisées toutes les 5 minutes pour repérer les moments qui méritent un clip.",
   },
   {
     title: "Les clips se préparent tout seuls",
     body: "Chaque moment fort est découpé (30–60 s), recadré en 9:16 et sous-titré, prêt pour Shorts, TikTok et Reels.",
   },
   {
-    title: "Téléchargez ou publiez",
-    body: "Retrouvez vos clips dans votre bibliothèque, téléchargez-les ou publiez-les sur vos réseaux.",
+    title: "Publiez en un clic",
+    body: "Connectez YouTube, TikTok et Instagram : STREAMCLIP peut publier automatiquement vos meilleurs clips.",
   },
 ];
 
@@ -76,12 +77,12 @@ const QUESTIONS = [
   {
     question: "Comment connecter OBS ou Streamlabs ?",
     answer:
-      "Service = Personnalisé, serveur = rtmp://rtmp.streamclip.fr/live, clé = celle affichée une seule fois dans votre espace. Au démarrage du live, STREAMCLIP vérifie votre abonnement et relaie le flux vers votre instance EC2 dédiée.",
+      "Service = Personnalisé, serveur = rtmp://rtmp.streamclip.fr/live, clé = celle affichée une seule fois dans votre espace. Au démarrage du live, STREAMCLIP vérifie votre abonnement et lance l'analyse automatiquement.",
   },
   {
     question: "La publication sur les réseaux est-elle automatique ?",
     answer:
-      "Pour l'instant, téléchargez vos clips et publiez-les vous-même. La connexion OAuth officielle (YouTube, TikTok, Instagram) arrivera ensuite ; vos préférences sont déjà enregistrées à l'onboarding.",
+      "Oui, si vous connectez YouTube, TikTok et/ou Instagram dans vos paramètres et activez la publication automatique. Vous pouvez aussi télécharger chaque clip et publier manuellement.",
   },
   {
     question: "Que deviennent mes vidéos et mes données ?",
@@ -149,8 +150,8 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
                 <span className="text-gradient">clips verticaux</span> prêts à publier
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
-                Connectez OBS en une URL RTMP, STREAMCLIP allume votre instance, analyse le live et
-                livre des clips 9:16 sous-titrés pour YouTube Shorts, TikTok et Instagram.
+                Connectez OBS avec une URL RTMP, STREAMCLIP analyse votre live et livre des clips
+                9:16 sous-titrés pour YouTube Shorts, TikTok et Instagram.
               </p>
               <div className="mt-9 flex flex-wrap gap-3">
                 <ButtonLink href="/register" size="lg">
@@ -166,6 +167,10 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
               </p>
             </div>
             <ClipIllustration />
+          </div>
+
+          <div className="relative mx-auto w-full max-w-6xl px-4 pb-16 sm:px-6 lg:pb-20">
+            <ConceptFlow />
           </div>
         </section>
 
