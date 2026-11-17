@@ -34,10 +34,10 @@ export function PlanCard({ plan, highlighted = false, current = false, action }:
   return (
     <article
       className={cx(
-        "relative flex flex-col rounded-3xl border p-6 transition-colors",
+        "relative flex flex-col rounded-3xl border p-6 transition-all",
         highlighted
-          ? "border-brand-400/50 bg-gradient-to-b from-brand-500/15 via-ink-900/80 to-ink-950 shadow-xl shadow-brand-500/10"
-          : "border-white/10 bg-ink-950/50 hover:border-white/15 hover:bg-ink-900/60",
+          ? "border-brand-400/45 bg-gradient-to-b from-brand-500/20 via-ink-900/85 to-ink-950 shadow-[0_24px_50px_-24px_rgba(37,99,235,0.55),inset_0_1px_0_rgba(255,255,255,0.1)]"
+          : "border-white/10 bg-ink-950/55 shadow-[0_18px_40px_-28px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-white/18 hover:bg-ink-900/70",
       )}
     >
       <div className="flex items-center justify-between gap-2">

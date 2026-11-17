@@ -71,12 +71,12 @@ export function Logo({ className }: { className?: string }) {
       <svg viewBox="0 0 32 32" aria-hidden className="size-7">
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#9b84ff" />
-            <stop offset="1" stopColor="#ff7ac3" />
+            <stop offset="0" stopColor="#60a5fa" />
+            <stop offset="1" stopColor="#2563eb" />
           </linearGradient>
         </defs>
         <rect x="8" y="2" width="16" height="28" rx="5" fill={`url(#${gradientId})`} />
-        <path d="M14 11.5v9l7-4.5z" fill="#07070b" />
+        <path d="M14 11.5v9l7-4.5z" fill="#05070c" />
       </svg>
       <span className="text-white">
         STREAMCLIP <span className="text-brand-300">AI</span>

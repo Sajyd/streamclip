@@ -96,7 +96,7 @@ function SectionHeading({
 }) {
   return (
     <div className="mx-auto max-w-2xl text-center">
-      <p className="text-xs font-medium tracking-[0.2em] text-brand-300 uppercase">{eyebrow}</p>
+      <p className="text-xs font-medium tracking-[0.22em] text-brand-300 uppercase">{eyebrow}</p>
       <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">{title}</h2>
       {intro ? <p className="mt-4 text-base leading-relaxed text-ink-300">{intro}</p> : null}
     </div>
@@ -130,12 +130,16 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
         </Suspense>
 
         <section className="relative overflow-hidden">
-          <div className="mx-auto grid w-full max-w-6xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16 lg:py-24">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_at_center,rgba(59,130,246,0.16),transparent_65%)]"
+          />
+          <div className="relative mx-auto grid w-full max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-10 lg:py-24">
             <div className="animate-fade-up">
-              <p className="text-sm font-medium tracking-[0.18em] text-brand-300 uppercase">
+              <p className="text-sm font-medium tracking-[0.2em] text-brand-300 uppercase">
                 STREAMCLIP
               </p>
-              <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-[3.4rem] lg:leading-[1.08]">
+              <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-[3.45rem] lg:leading-[1.06]">
                 Vos lives deviennent des{" "}
                 <span className="text-gradient">clips verticaux</span> prêts à publier
               </h1>
@@ -166,13 +170,13 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
               title="Du direct au clip, sans montage"
               intro="Quatre étapes, dont une seule vous demande une action."
             />
-            <ol className="mt-14 grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
+            <ol className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {STEPS.map((step, index) => (
-                <li key={step.title} className="relative">
-                  <span className="font-mono text-sm font-medium text-brand-300">
+                <li key={step.title} className="surface relative p-6">
+                  <span className="flex size-9 items-center justify-center rounded-xl bg-brand-500/15 font-mono text-sm font-semibold text-brand-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
                     {String(index + 1).padStart(2, "0")}
                   </span>
-                  <h3 className="mt-3 text-base font-semibold text-white">{step.title}</h3>
+                  <h3 className="mt-4 text-base font-semibold text-white">{step.title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-ink-300">{step.body}</p>
                 </li>
               ))}
@@ -187,9 +191,13 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
               title="Pensé pour les créateurs qui diffusent en direct"
               intro="Gaming, podcasts, interviews, discussions, lives IRL, événements ou musique."
             />
-            <div className="mt-14 grid gap-px overflow-hidden rounded-3xl border border-white/10 bg-white/5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((feature) => (
-                <article key={feature.title} className="bg-ink-950/80 p-6 sm:p-7">
+                <article key={feature.title} className="surface p-6 sm:p-7">
+                  <div
+                    aria-hidden
+                    className="mb-4 h-1 w-10 rounded-full bg-gradient-to-r from-brand-400 to-flare-400"
+                  />
                   <h3 className="font-semibold text-white">{feature.title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-ink-300">{feature.body}</p>
                 </article>
@@ -216,14 +224,14 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
         <section id="faq" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
             <SectionHeading eyebrow="FAQ" title="Questions fréquentes" />
-            <div className="mt-10 divide-y divide-white/10 overflow-hidden rounded-3xl border border-white/10">
+            <div className="surface mt-10 divide-y divide-white/10 overflow-hidden p-0">
               {QUESTIONS.map((item) => (
-                <details key={item.question} className="group bg-ink-950/50 px-5 py-4 open:bg-ink-900/60">
+                <details key={item.question} className="group px-5 py-4 open:bg-white/[0.02]">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-4 font-medium text-white">
                     {item.question}
                     <span
                       aria-hidden
-                      className="flex size-7 shrink-0 items-center justify-center rounded-full border border-white/10 text-brand-300 transition-transform group-open:rotate-45"
+                      className="flex size-7 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-ink-900 text-brand-300 transition-transform group-open:rotate-45"
                     >
                       +
                     </span>
@@ -237,13 +245,23 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
 
         <section className="border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-3xl px-4 text-center sm:px-6">
-            <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-              Prêt à essayer sur votre prochain live&nbsp;?
-            </h2>
-            <p className="mt-4 text-ink-300">Créez votre compte en une minute. Sans carte bancaire.</p>
-            <ButtonLink href="/register" size="lg" className="mt-8">
-              Créer mon compte gratuit
-            </ButtonLink>
+            <div className="surface relative overflow-hidden px-6 py-12 sm:px-10">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(59,130,246,0.22),transparent_60%)]"
+              />
+              <div className="relative">
+                <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+                  Prêt à essayer sur votre prochain live&nbsp;?
+                </h2>
+                <p className="mt-4 text-ink-300">
+                  Créez votre compte en une minute. Sans carte bancaire.
+                </p>
+                <ButtonLink href="/register" size="lg" className="mt-8">
+                  Créer mon compte gratuit
+                </ButtonLink>
+              </div>
+            </div>
           </div>
         </section>
       </main>
