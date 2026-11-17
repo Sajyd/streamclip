@@ -19,7 +19,7 @@ async function UserMenu() {
     <div className="flex items-center gap-3">
       {user.platform_role === "user" ? null : (
         <Link
-          href="/admin/users"
+          href="/admin"
           className="rounded-lg px-2.5 py-1.5 text-sm text-ink-300 transition-colors hover:bg-white/5 hover:text-white"
         >
           Administration

@@ -211,6 +211,144 @@ export type AdminUser = {
 
 export type AdminUserList = { items: AdminUser[]; next_cursor: string | null };
 
+export type AdminAnalyticsPeriod = "day" | "week" | "month" | "year";
+
+export type AdminAnalyticsTotals = {
+  users_total: number;
+  users_new: number;
+  users_new_previous: number;
+  paying_subscribers: number;
+  subscriptions_new: number;
+  subscriptions_new_previous: number;
+  mrr_cents: number;
+  lives_active: number;
+  lives_started: number;
+  lives_started_previous: number;
+  clips_total: number;
+  clips_created: number;
+  clips_created_previous: number;
+  exports_created: number;
+  exports_created_previous: number;
+  clip_downloads: number;
+  clip_downloads_previous: number;
+};
+
+export type AdminPlanBreakdown = {
+  plan_code: string;
+  plan_name: string;
+  price_cents: number;
+  currency: string;
+  subscribers: number;
+  mrr_cents: number;
+};
+
+export type AdminAnalyticsBucket = {
+  bucket_start: string;
+  users_new: number;
+  clips_created: number;
+  lives_started: number;
+  exports_created: number;
+  clip_downloads: number;
+};
+
+export type AdminAnalytics = {
+  period: AdminAnalyticsPeriod;
+  range_start: string;
+  range_end: string;
+  previous_range_start: string;
+  currency: string;
+  totals: AdminAnalyticsTotals;
+  plans: AdminPlanBreakdown[];
+  series: AdminAnalyticsBucket[];
+};
+
+export type AdminSubscription = {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  owner_email: string | null;
+  plan_code: string;
+  plan_name: string;
+  price_cents: number;
+  currency: string;
+  status: string;
+  is_paid: boolean;
+  current_period_start: string;
+  current_period_end: string;
+  cancel_at_period_end: boolean;
+  payment_failed: boolean;
+  created_at: string;
+};
+
+export type AdminSubscriptionSummary = {
+  mrr_cents: number;
+  currency: string;
+  paying_subscribers: number;
+  free_subscribers: number;
+  plans: AdminPlanBreakdown[];
+};
+
+export type AdminSubscriptionList = {
+  items: AdminSubscription[];
+  next_cursor: string | null;
+  summary: AdminSubscriptionSummary;
+};
+
+export type AdminLive = {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  owner_email: string | null;
+  status: string;
+  end_reason: string | null;
+  protocol: string | null;
+  title: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  last_media_at: string | null;
+  media_duration_ms: number;
+  processed_ms: number;
+  clips_count: number;
+  created_at: string;
+};
+
+export type AdminLiveList = { items: AdminLive[]; next_cursor: string | null };
+
+export type AdminClip = {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  owner_email: string | null;
+  title: string;
+  status: string;
+  category: string;
+  score: number;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  is_favorite: boolean;
+  stream_session_id: string | null;
+  created_at: string;
+};
+
+export type AdminClipList = { items: AdminClip[]; next_cursor: string | null };
+
+export type AdminExport = {
+  id: string;
+  kind: "data_export" | "clip_download";
+  organization_id: string;
+  organization_name: string;
+  owner_email: string | null;
+  status: string;
+  size_bytes: number | null;
+  clip_id: string | null;
+  clip_title: string | null;
+  created_at: string;
+  expires_at: string | null;
+};
+
+export type AdminExportList = { items: AdminExport[]; next_cursor: string | null };
+
 export type StreamKey = {
   public_id: string;
   key_hint: string;

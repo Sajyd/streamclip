@@ -25,6 +25,9 @@ def create_app(settings: Settings | None = None, ctx: AppContext | None = None) 
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        from app.services.admin import ensure_platform_admins
+
+        await ensure_platform_admins(ctx)
         yield
         await ctx.db.dispose()
 

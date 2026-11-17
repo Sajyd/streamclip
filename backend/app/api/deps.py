@@ -43,7 +43,17 @@ def _bearer_token(request: Request) -> str:
     return token.strip()
 
 
+async def _bootstrap_admins(ctx: AppContext) -> None:
+    """Promote PLATFORM_ADMIN_EMAILS when configured (idempotent, cheap no-op)."""
+    if not (ctx.settings.platform_admin_emails or "").strip():
+        return
+    from app.services.admin import ensure_platform_admins
+
+    await ensure_platform_admins(ctx)
+
+
 async def get_principal(request: Request, ctx: Ctx) -> Principal:
+    await _bootstrap_admins(ctx)
     principal = await authenticate(ctx, _bearer_token(request))
     structlog.contextvars.bind_contextvars(
         user_id=str(principal.user_id), organization_id=str(principal.organization_id)
@@ -55,6 +65,7 @@ async def get_optional_principal(request: Request, ctx: Ctx) -> Principal | None
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
         return None
+    await _bootstrap_admins(ctx)
     principal = await authenticate(ctx, token.strip())
     structlog.contextvars.bind_contextvars(
         user_id=str(principal.user_id), organization_id=str(principal.organization_id)

@@ -195,3 +195,40 @@ async def test_first_admin_is_granted_from_the_command_line(
             await session.execute(select(AuditLog).where(AuditLog.action == "admin.role_granted"))
         ).scalar_one()
     assert entry.actor_type.value == "system" and entry.target_id == str(account.user_id)
+
+
+async def test_admin_analytics_and_directory_endpoints(
+    client: httpx.AsyncClient, ctx: AppContext, fake_stripe: FakeStripeGateway
+) -> None:
+    admin = await register(client, email="ops@example.com")
+    await _set_role(ctx, admin, "admin")
+    creator = await register(client, email="streamer@example.com")
+    await _subscribe(client, fake_stripe, creator, plan="pro")
+
+    for period in ("day", "week", "month", "year"):
+        analytics = await client.get(
+            f"{API}/admin/analytics?period={period}", headers=admin.headers
+        )
+        assert analytics.status_code == 200
+        body = analytics.json()
+        assert body["period"] == period
+        assert body["totals"]["users_total"] >= 2
+        assert body["totals"]["mrr_cents"] >= 9900
+        assert isinstance(body["series"], list) and len(body["series"]) >= 1
+
+    subscriptions = (
+        await client.get(f"{API}/admin/subscriptions", headers=admin.headers)
+    ).json()
+    assert subscriptions["summary"]["mrr_cents"] >= 9900
+    assert subscriptions["summary"]["paying_subscribers"] >= 1
+    assert any(item["plan_code"] == "pro" for item in subscriptions["items"])
+
+    lives = await client.get(f"{API}/admin/lives", headers=admin.headers)
+    clips = await client.get(f"{API}/admin/clips", headers=admin.headers)
+    exports = await client.get(f"{API}/admin/exports", headers=admin.headers)
+    assert lives.status_code == 200 and "items" in lives.json()
+    assert clips.status_code == 200 and "items" in clips.json()
+    assert exports.status_code == 200 and "items" in exports.json()
+
+    forbidden = await client.get(f"{API}/admin/analytics", headers=creator.headers)
+    assert forbidden.status_code == 403 and error_code(forbidden) == "admin_required"

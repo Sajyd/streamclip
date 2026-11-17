@@ -1,18 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { reactivateUserAction, suspendUserAction } from "@/app/actions/admin";
+import { AdminShell } from "@/components/app/admin-shell";
 import { buttonClasses } from "@/components/ui/button";
 import { Field, Form, SubmitButton } from "@/components/ui/form";
 import { Badge, Card, Skeleton } from "@/components/ui/primitives";
-import { api } from "@/lib/api";
-import { requireSession, ServiceUnavailableError } from "@/lib/dal";
+import { adminFetch, one, requireStaff } from "@/lib/admin";
 import { formatDateTime } from "@/lib/format";
 import type { AdminUser, AdminUserList } from "@/types/api";
 
-export const metadata: Metadata = { title: "Administration — utilisateurs", robots: { index: false } };
+export const metadata: Metadata = {
+  title: "Administration — utilisateurs",
+  robots: { index: false },
+};
 
 const PATH = "/admin/users";
 
@@ -25,16 +27,8 @@ const STATUS: Record<AdminUser["status"], { label: string; tone: "ok" | "warn" |
   deleted: { label: "Supprimé", tone: "neutral" },
 };
 
-function one(value: string | string[] | undefined): string {
-  return (Array.isArray(value) ? value[0] : value) ?? "";
-}
-
 async function Users({ searchParams }: { searchParams: SearchParams }) {
-  const { token, me } = await requireSession(PATH);
-  if (me.user.platform_role === "user") {
-    // The API refuses anyway; the page does not reveal that it exists.
-    notFound();
-  }
+  const { token, me } = await requireStaff(PATH);
   const query = await searchParams;
   const search = one(query.q).trim().slice(0, 100);
   const cursor = one(query.cursor);
@@ -42,17 +36,8 @@ async function Users({ searchParams }: { searchParams: SearchParams }) {
   if (search) params.set("search", search);
   if (/^[0-9a-f-]{36}$/i.test(cursor)) params.set("cursor", cursor);
 
-  const result = await api<AdminUserList>(`/admin/users?${params}`, { token });
-  if (!result.ok) {
-    if (result.error.status === 401) {
-      redirect(`/auth/refresh?next=${encodeURIComponent(PATH)}`);
-    }
-    if (result.error.status === 403) {
-      notFound();
-    }
-    throw new ServiceUnavailableError();
-  }
-  const { items, next_cursor: nextCursor } = result.data;
+  const result = await adminFetch<AdminUserList>(`/admin/users?${params}`, token, PATH);
+  const { items, next_cursor: nextCursor } = result;
   const isAdmin = me.user.platform_role === "admin";
   const timeZone = me.user.timezone;
   const nextParams = new URLSearchParams();
@@ -60,14 +45,10 @@ async function Users({ searchParams }: { searchParams: SearchParams }) {
   if (nextCursor) nextParams.set("cursor", nextCursor);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Utilisateurs</h1>
-        <p className="mt-1 text-sm text-ink-300">
-          Comptes de la plateforme, du plus récent au plus ancien. Chaque suspension est journalisée.
-        </p>
-      </div>
-
+    <AdminShell
+      title="Utilisateurs"
+      description="Comptes de la plateforme, du plus récent au plus ancien. Chaque suspension est journalisée."
+    >
       <form action={PATH} className="flex max-w-md gap-2">
         <label htmlFor="q" className="sr-only">
           Rechercher par adresse e-mail
@@ -100,7 +81,9 @@ async function Users({ searchParams }: { searchParams: SearchParams }) {
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="min-w-0 truncate text-sm font-medium text-white">{user.email}</p>
                     <Badge tone={status.tone}>{status.label}</Badge>
-                    {user.platform_role !== "user" ? <Badge tone="brand">{user.platform_role}</Badge> : null}
+                    {user.platform_role !== "user" ? (
+                      <Badge tone="brand">{user.platform_role}</Badge>
+                    ) : null}
                     {user.email_verified ? null : <Badge tone="warn">E-mail non confirmé</Badge>}
                   </div>
                   <p className="mt-1.5 text-xs text-ink-400">
@@ -145,7 +128,7 @@ async function Users({ searchParams }: { searchParams: SearchParams }) {
           Comptes suivants
         </Link>
       ) : null}
-    </div>
+    </AdminShell>
   );
 }
 

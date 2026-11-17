@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     cron_secret: SecretStr | None = None
     max_request_body_bytes: int = 1_048_576
     vat_rate_percent: float = 20.0
+    # Comma-separated e-mails promoted to platform admin on each auth
+    # (idempotent). Override with PLATFORM_ADMIN_EMAILS.
+    platform_admin_emails: str = "sajydmounib@gmail.com"
 
     @property
     def is_production(self) -> bool:

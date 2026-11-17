@@ -404,6 +404,151 @@ class SuspendRequest(ApiModel):
     reason: Annotated[str, Field(min_length=3, max_length=500)]
 
 
+class AdminAnalyticsTotals(ApiModel):
+    users_total: int
+    users_new: int
+    users_new_previous: int
+    paying_subscribers: int
+    subscriptions_new: int
+    subscriptions_new_previous: int
+    mrr_cents: int
+    lives_active: int
+    lives_started: int
+    lives_started_previous: int
+    clips_total: int
+    clips_created: int
+    clips_created_previous: int
+    exports_created: int
+    exports_created_previous: int
+    clip_downloads: int
+    clip_downloads_previous: int
+
+
+class AdminPlanBreakdown(ApiModel):
+    plan_code: str
+    plan_name: str
+    price_cents: int
+    currency: str
+    subscribers: int
+    mrr_cents: int
+
+
+class AdminAnalyticsBucket(ApiModel):
+    bucket_start: datetime
+    users_new: int
+    clips_created: int
+    lives_started: int
+    exports_created: int
+    clip_downloads: int
+
+
+class AdminAnalyticsOut(ApiModel):
+    period: Literal["day", "week", "month", "year"]
+    range_start: datetime
+    range_end: datetime
+    previous_range_start: datetime
+    currency: str
+    totals: AdminAnalyticsTotals
+    plans: list[AdminPlanBreakdown]
+    series: list[AdminAnalyticsBucket]
+
+
+class AdminSubscriptionOut(ApiModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    organization_name: str
+    owner_email: str | None
+    plan_code: str
+    plan_name: str
+    price_cents: int
+    currency: str
+    status: str
+    is_paid: bool
+    current_period_start: datetime
+    current_period_end: datetime
+    cancel_at_period_end: bool
+    payment_failed: bool
+    created_at: datetime
+
+
+class AdminSubscriptionSummary(ApiModel):
+    mrr_cents: int
+    currency: str
+    paying_subscribers: int
+    free_subscribers: int
+    plans: list[AdminPlanBreakdown]
+
+
+class AdminSubscriptionList(ApiModel):
+    items: list[AdminSubscriptionOut]
+    next_cursor: uuid.UUID | None
+    summary: AdminSubscriptionSummary
+
+
+class AdminLiveOut(ApiModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    organization_name: str
+    owner_email: str | None
+    status: str
+    end_reason: str | None
+    protocol: str | None
+    title: str | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    last_media_at: datetime | None
+    media_duration_ms: int
+    processed_ms: int
+    clips_count: int
+    created_at: datetime
+
+
+class AdminLiveList(ApiModel):
+    items: list[AdminLiveOut]
+    next_cursor: uuid.UUID | None
+
+
+class AdminClipOut(ApiModel):
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    organization_name: str
+    owner_email: str | None
+    title: str
+    status: str
+    category: str
+    score: float
+    start_ms: int
+    end_ms: int
+    duration_ms: int
+    is_favorite: bool
+    stream_session_id: uuid.UUID | None
+    created_at: datetime
+
+
+class AdminClipList(ApiModel):
+    items: list[AdminClipOut]
+    next_cursor: uuid.UUID | None
+
+
+class AdminExportOut(ApiModel):
+    id: uuid.UUID
+    kind: Literal["data_export", "clip_download"]
+    organization_id: uuid.UUID
+    organization_name: str
+    owner_email: str | None
+    status: str
+    size_bytes: int | None
+    clip_id: uuid.UUID | None
+    clip_title: str | None
+    created_at: datetime
+    expires_at: datetime | None
+
+
+class AdminExportList(ApiModel):
+    items: list[AdminExportOut]
+    next_cursor: uuid.UUID | None
+
+
 # --- Ingest ------------------------------------------------------------------
 
 

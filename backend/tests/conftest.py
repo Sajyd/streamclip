@@ -104,6 +104,8 @@ def settings(database_url: str) -> Settings:
         stripe_webhook_secret=WEBHOOK_SECRET,
         log_level="WARNING",
         password_reset_response_floor_seconds=0.0,
+        # Keep role promotion explicit in tests (CLI / _set_role).
+        platform_admin_emails="",
     )
 
 
