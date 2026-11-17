@@ -314,6 +314,18 @@ export type AdminLive = {
 
 export type AdminLiveList = { items: AdminLive[]; next_cursor: string | null };
 
+export type LivePlayback = {
+  status: "live" | "offline" | "starting" | string;
+  session_id: string | null;
+  public_id: string | null;
+  title: string | null;
+  rtmp_url: string | null;
+  preview_available: boolean;
+  message: string;
+  stream_key_hint: string | null;
+  preview_token: string | null;
+};
+
 export type AdminLiveDetail = AdminLive & {
   error_code: string | null;
   error_message: string | null;
@@ -352,6 +364,10 @@ export type AdminLiveDetail = AdminLive & {
     end_ms: number;
     created_at: string;
   }>;
+  stream_key_public_id: string | null;
+  stream_key_hint: string | null;
+  rtmp_url: string | null;
+  playback: LivePlayback | null;
 };
 
 export type AdminClip = {

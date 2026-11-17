@@ -545,6 +545,23 @@ class AdminLiveNodeOut(ApiModel):
     instance_id: str | None
     launch_error: str | None
     launched_at: datetime | None
+    analysis_url: str | None = None
+    analysis_health_url: str | None = None
+    analysis_status_url: str | None = None
+
+
+class LivePlaybackOut(ApiModel):
+    """Browser live preview metadata (HLS via dedicated agent; RTMP for VLC)."""
+
+    status: str  # live | offline | starting
+    session_id: uuid.UUID | None = None
+    public_id: str | None = None
+    title: str | None = None
+    rtmp_url: str | None = None
+    preview_available: bool = False
+    message: str = ""
+    stream_key_hint: str | None = None
+    preview_token: str | None = None
 
 
 class AdminLiveDetailOut(AdminLiveOut):
@@ -554,6 +571,11 @@ class AdminLiveDetailOut(AdminLiveOut):
     pipeline_log: list[AdminLivePipelineEventOut] = []
     tasks: list[AdminLiveTaskOut] = []
     highlights: list[AdminLiveHighlightOut] = []
+    # User ingest path identity (OBS stream key = `{public_id}/{secret}`).
+    stream_key_public_id: str | None = None
+    stream_key_hint: str | None = None
+    rtmp_url: str | None = None
+    playback: LivePlaybackOut | None = None
 
 
 class AdminClipOut(ApiModel):

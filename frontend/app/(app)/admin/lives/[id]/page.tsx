@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { StatusBadge } from "@/components/app/admin-analytics";
+import { AdminLivePlayer } from "@/components/app/admin-live-player";
 import { AdminShell } from "@/components/app/admin-shell";
 import { buttonClasses } from "@/components/ui/button";
 import { Card, Skeleton } from "@/components/ui/primitives";
@@ -44,6 +45,14 @@ async function LiveDetail({ params }: { params: Props["params"] }) {
         </Link>
       }
     >
+      <AdminLivePlayer
+        liveId={detail.id}
+        initial={detail.playback}
+        streamKeyPublicId={detail.stream_key_public_id}
+        streamKeyHint={detail.stream_key_hint}
+        rtmpUrl={detail.rtmp_url}
+      />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="space-y-3 p-5">
           <div className="flex flex-wrap items-center gap-2">
@@ -105,6 +114,31 @@ async function LiveDetail({ params }: { params: Props["params"] }) {
               <dt className="text-ink-400">EC2</dt>
               <dd className="font-mono text-xs text-ink-100">
                 {detail.ingest_node.instance_id ?? "—"}
+              </dd>
+              <dt className="text-ink-400">Agent</dt>
+              <dd className="flex flex-wrap gap-2 text-sm">
+                {detail.ingest_node.analysis_health_url ? (
+                  <a
+                    href={detail.ingest_node.analysis_health_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-emerald-300/90 underline-offset-2 hover:underline"
+                  >
+                    /health
+                  </a>
+                ) : (
+                  <span className="text-ink-500">—</span>
+                )}
+                {detail.ingest_node.analysis_status_url ? (
+                  <a
+                    href={detail.ingest_node.analysis_status_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-emerald-300/90 underline-offset-2 hover:underline"
+                  >
+                    /status
+                  </a>
+                ) : null}
               </dd>
               {detail.ingest_node.launch_error ? (
                 <>

@@ -592,6 +592,26 @@ async def list_subscriptions(
     return items, next_cursor, summary
 
 
+def _ingest_node_payload(node: Any) -> dict[str, Any] | None:
+    if node is None:
+        return None
+    host = node.public_hostname
+    base = f"http://{host}:8080" if host else None
+    details = node.details if isinstance(node.details, dict) else {}
+    return {
+        "id": node.id,
+        "name": node.name,
+        "status": node.status.value,
+        "public_hostname": node.public_hostname,
+        "instance_id": node.instance_id,
+        "launch_error": details.get("launch_error"),
+        "launched_at": node.launched_at,
+        "analysis_url": base,
+        "analysis_health_url": f"{base}/health" if base else None,
+        "analysis_status_url": f"{base}/status" if base else None,
+    }
+
+
 async def get_live(
     ctx: AppContext, live_id: uuid.UUID
 ) -> dict[str, Any] | None:
@@ -686,6 +706,27 @@ async def get_live(
             )
         ).scalars().all()
 
+        from app.models.enums import StreamKeyStatus
+        from app.models.media import StreamKey
+        from app.services import playback as playback_service
+
+        key = None
+        if stream.stream_key_id:
+            key = await session.get(StreamKey, stream.stream_key_id)
+        if key is None:
+            key = (
+                await session.execute(
+                    select(StreamKey).where(
+                        StreamKey.organization_id == stream.organization_id,
+                        StreamKey.status == StreamKeyStatus.ACTIVE,
+                    )
+                )
+            ).scalar_one_or_none()
+
+    host = node.public_hostname if node and node.status.value == "ready" else None
+    rtmp_url = ingest_nodes_service.rtmp_url_for_host(host) if host else None
+    playback = await playback_service.playback_for_live(ctx, live_id)
+
     return {
         "id": stream.id,
         "organization_id": stream.organization_id,
@@ -704,21 +745,7 @@ async def get_live(
         "created_at": stream.created_at,
         "error_code": stream.error_code,
         "error_message": stream.error_message,
-        "ingest_node": (
-            {
-                "id": node.id,
-                "name": node.name,
-                "status": node.status.value,
-                "public_hostname": node.public_hostname,
-                "instance_id": node.instance_id,
-                "launch_error": (node.details or {}).get("launch_error")
-                if isinstance(node.details, dict)
-                else None,
-                "launched_at": node.launched_at,
-            }
-            if node is not None
-            else None
-        ),
+        "ingest_node": _ingest_node_payload(node),
         "pipeline_log": [
             {
                 "id": e.id,
@@ -754,6 +781,10 @@ async def get_live(
             }
             for h in highlights
         ],
+        "stream_key_public_id": key.public_id if key else None,
+        "stream_key_hint": key.key_hint if key else None,
+        "rtmp_url": rtmp_url,
+        "playback": playback_service.info_to_dict(playback, ctx.settings),
     }
 
 
