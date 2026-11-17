@@ -303,4 +303,10 @@ async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
                     .values(status=AssetStatus.DELETED, deleted_at=now)
                 )
         removed["storage_assets"] = len(expired_assets)
+
+    async with ctx.db.system_tx() as session:
+        from app.services import ingest_nodes
+
+        removed["ingest_spots"] = await ingest_nodes.terminate_due_nodes(session, ctx.settings)
+
     log.info("maintenance_cleanup", **removed)

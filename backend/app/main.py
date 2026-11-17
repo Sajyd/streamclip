@@ -46,4 +46,6 @@ def create_app(settings: Settings | None = None, ctx: AppContext | None = None) 
     for module in (system, auth, account, billing, admin, ingest, clips, highlights, social):
         api.include_router(module.router)
     application.include_router(api)
+    # Memorable public resolve URL: /rtmp?key=… → 302 rtmp://dedicated-spot/live
+    application.include_router(ingest.public_router)
     return application

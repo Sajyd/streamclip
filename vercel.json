@@ -26,6 +26,10 @@
   },
   "rewrites": [
     {
+      "source": "/rtmp",
+      "destination": { "service": "api" }
+    },
+    {
       "source": "/api/v1/billing/webhooks/(.*)",
       "destination": { "service": "api" }
     },

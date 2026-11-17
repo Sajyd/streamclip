@@ -71,23 +71,35 @@ class Settings(BaseSettings):
     # Custom names: Vercel reserves the AWS_* variables for its own runtime.
     s3_bucket: str | None = None
     s3_region: str | None = None
+    # Bootstrap keys (iamuser2): used ONLY to call sts:AssumeRole.
     s3_access_key_id: SecretStr | None = None
     s3_secret_access_key: SecretStr | None = None
     s3_endpoint_url: str | None = None
     data_export_ttl_days: int = 7
 
-    # --- Ingest (MediaMTX data plane) ---------------------------------------
-    # Users always get PUBLIC_APP_URL/api/v1/ingest/resolve. That endpoint
-    # authenticates the stream key, starts the org's dedicated t4g.small spot
-    # if needed, and redirects/returns rtmp://{instance}:1935/live.
-    # Optional fallback hostname while per-org RunInstances is not yet wired.
-    ingest_public_host: str | None = None
-    # Optional explicit RTMP URL used only to derive a fallback hostname.
-    ingest_rtmps_url: str | None = None
-    # Optional SRT URL template; `{public_id}` / `{secret}` are substituted.
-    ingest_srt_url: str | None = None
-    # Shared secret for MediaMTX → API auth/event webhooks.
+    # --- AWS AssumeRole (all service calls use the role, not the bootstrap key)
+    aws_role_arn: str | None = None
+    aws_role_session_name: str = "streamclip-api"
+    aws_role_duration_seconds: int = 3600
+
+    # --- Ingest (per-org MediaMTX t4g.small spot) ----------------------------
+    # Users get PUBLIC_APP_URL/rtmp?key=… → quota check → start unique spot →
+    # 302 rtmp://{instance-ip}:1935/live. No shared fallback host.
     ingest_hook_secret: SecretStr | None = None
+    ingest_api_auth_url: str | None = None
+    ingest_api_event_url: str | None = None
+    # EC2 launch (required in staging/production for real spots).
+    ingest_ec2_ami_id: str | None = None
+    ingest_ec2_subnet_id: str | None = None
+    ingest_ec2_security_group_id: str | None = None
+    ingest_ec2_instance_profile: str | None = None
+    ingest_ec2_instance_type: str = "t4g.small"
+    ingest_ec2_region: str | None = None
+    # Legacy optional SRT template (advanced).
+    ingest_srt_url: str | None = None
+    # Deprecated: ignored for resolve (no shared host). Kept for env compat.
+    ingest_public_host: str | None = None
+    ingest_rtmps_url: str | None = None
 
     # --- ASR / transcription ------------------------------------------------
     # none | console | openai_compatible (Groq/OpenAI-compatible HTTP).
@@ -129,16 +141,23 @@ class Settings(BaseSettings):
 
     @property
     def storage_enabled(self) -> bool:
+        has_bootstrap = (
+            self.s3_access_key_id is not None and self.s3_secret_access_key is not None
+        )
+        return bool(self.s3_bucket and self.s3_region and has_bootstrap)
+
+    @property
+    def ingest_launcher_configured(self) -> bool:
         return bool(
-            self.s3_bucket
-            and self.s3_region
-            and self.s3_access_key_id is not None
-            and self.s3_secret_access_key is not None
+            self.ingest_ec2_ami_id
+            and self.ingest_ec2_subnet_id
+            and self.ingest_ec2_security_group_id
         )
 
     @property
     def ingest_online(self) -> bool:
-        return bool((self.ingest_public_host or "").strip())
+        # Ready to start per-org spots (AWS configured, or local/test fake launcher).
+        return self.ingest_launcher_configured or self.environment in ("local", "test")
 
     def jwt_keyring(self) -> dict[str, str]:
         keyring: dict[str, str] = {}

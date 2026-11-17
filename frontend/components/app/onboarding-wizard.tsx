@@ -158,18 +158,18 @@ function ObsGuide({
       <ol className="space-y-4">
         {(isStreamlabs
           ? [
-              "Créez votre clé STREAMCLIP ci-dessus et copiez l’URL API + la clé secrète (une seule fois).",
-              "Avant le live : « Préparer mon live » avec votre clé → l’API démarre votre instance et renvoie l’URL RTMP.",
-              "Ouvrez Streamlabs → Paramètres → Stream → destination Custom RTMP.",
-              "Collez le serveur RTMP renvoyé et votre clé secrète. Gardez Twitch/YouTube en parallèle.",
-              "Démarrez le live : MediaMTX reçoit le flux ; toutes les 5 min l’analyse met à jour vos highlights.",
+              "Créez votre clé et copiez l’URL /rtmp + la clé secrète (affichée une seule fois).",
+              "« Démarrer mon live » : quota OK → EC2 spot dédié → URL RTMP unique.",
+              "Streamlabs → destination Custom RTMP : collez le serveur RTMP + votre clé.",
+              "Gardez Twitch/YouTube en parallèle. STREAMCLIP reçoit une copie du live.",
+              "Fin de live : le spot s’arrête après 5 minutes sans signal RTMP.",
             ]
           : [
-              "Créez votre clé STREAMCLIP ci-dessus et copiez l’URL API + la clé secrète (une seule fois).",
-              "Avant le live : « Préparer mon live » → l’API démarre votre EC2 spot et renvoie rtmp://…",
-              "OBS → Paramètres → Stream (ou Multiple RTMP Outputs) : Service Personnalisé.",
+              "Créez votre clé et copiez l’URL /rtmp + la clé secrète (une seule fois).",
+              "« Démarrer mon live » lance votre instance spot et renvoie rtmp://… unique.",
+              "OBS → Stream (ou Multiple RTMP Outputs) : Service Personnalisé.",
               "Serveur = URL RTMP renvoyée. Clé = votre clé secrète complète.",
-              "Démarrez le live : ingestion + analyse 5 min → résultats dans le tableau de bord.",
+              "Toutes les 5 min : enregistrement + analyse → highlights. Fin de flux → arrêt spot (+5 min).",
             ]
         ).map((text, index) => (
           <li key={text} className="flex gap-3">

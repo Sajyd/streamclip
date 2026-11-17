@@ -13,10 +13,10 @@ import asyncio
 import uuid
 from typing import Any
 
-import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from app.aws.session import boto3_session
 from app.core.config import Settings
 
 EXPORTS_PREFIX = "exports"
@@ -39,16 +39,13 @@ def tenant_key(organization_id: uuid.UUID, *parts: str) -> str:
 
 class ObjectStorage:
     def __init__(self, settings: Settings) -> None:
-        access_key, secret_key = settings.s3_access_key_id, settings.s3_secret_access_key
-        if not settings.storage_enabled or access_key is None or secret_key is None:
+        if not settings.storage_enabled:
             raise ValueError("Object storage is not configured")
         self.bucket: str = settings.s3_bucket or ""
-        self._client: Any = boto3.client(
+        # Credentials come from AssumeRole (bootstrap keys never touch S3 APIs).
+        self._client: Any = boto3_session(settings).client(
             "s3",
-            region_name=settings.s3_region,
             endpoint_url=settings.s3_endpoint_url,
-            aws_access_key_id=access_key.get_secret_value(),
-            aws_secret_access_key=secret_key.get_secret_value(),
             config=Config(
                 signature_version="s3v4",
                 s3={"addressing_style": "virtual"},

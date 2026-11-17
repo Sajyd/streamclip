@@ -51,6 +51,14 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async rewrites() {
+    // Local: memorable /rtmp resolve is served by the API process.
+    const api = process.env.API_INTERNAL_URL;
+    if (!api) {
+      return [];
+    }
+    return [{ source: "/rtmp", destination: `${api.replace(/\/$/, "")}/rtmp` }];
+  },
 };
 
 export default nextConfig;

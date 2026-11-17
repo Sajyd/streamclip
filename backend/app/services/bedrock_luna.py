@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import boto3
 import structlog
 
 from app.core.config import Settings
@@ -150,9 +149,11 @@ def _parse_json_payload(text: str) -> dict[str, Any]:
 
 class BedrockLuna:
     def __init__(self, settings: Settings) -> None:
+        from app.aws.session import boto3_session
+
         region = settings.bedrock_region or DEFAULT_REGION
         self.model_id = settings.bedrock_model or DEFAULT_MODEL
-        self._client = boto3.client("bedrock-runtime", region_name=region)
+        self._client = boto3_session(settings).client("bedrock-runtime", region_name=region)
 
     def analyze(
         self,

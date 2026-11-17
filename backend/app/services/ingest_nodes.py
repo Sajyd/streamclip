@@ -1,35 +1,44 @@
 """Dedicated ingest EC2 nodes (t4g.small spot) per organization.
 
-Lifecycle:
-  resolve(secret) → ensure dedicated node → start spot if needed →
-  return rtmp://{public_hostname}:1935/live once READY.
+Flow:
+  GET /rtmp?key=… → quota check → start unique spot → 302 rtmp://{ip}:1935/live
 
-MediaMTX on the instance accepts RTMP; a second HTTP port serves the
-analysis agent. The 5-minute FFmpeg → analysis → DB loop runs on-box
-(`python -m app.cli live-loop`).
+No shared fallback host. Each org gets its own instance IP or resolve fails.
+When RTMP goes idle, the node is marked for termination after a 5-minute margin.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.errors import PermissionDeniedError
 from app.core.ids import uuid7
-from app.models.enums import IngestNodeKind, IngestNodeStatus
+from app.models.enums import IngestNodeKind, IngestNodeStatus, SubscriptionStatus
 from app.models.media import IngestNode
+from app.services import entitlements
+from app.services.ingest_launcher import get_launcher
+
+log = structlog.get_logger(__name__)
 
 RTMP_PORT = 1935
 ANALYSIS_PORT = 8080
+IDLE_TERMINATE_MARGIN = timedelta(minutes=5)
+ACTIVE_SUB_STATUSES = frozenset(
+    {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE}
+)
 
 
 @dataclass(frozen=True, slots=True)
 class ResolveResult:
-    status: str  # starting | ready | unavailable
+    status: str  # ready | starting | unavailable | forbidden
     ingest_api_url: str
     rtmp_url: str | None
     analysis_url: str | None
@@ -39,9 +48,8 @@ class ResolveResult:
 
 
 def ingest_api_url(settings: Settings) -> str:
-    """Stable API address shown to every user (OBS resolves via stream key)."""
-    base = settings.public_app_url.rstrip("/")
-    return f"{base}/api/v1/ingest/resolve"
+    """Memorable resolve URL shown to every user."""
+    return f"{settings.public_app_url.rstrip('/')}/rtmp"
 
 
 def rtmp_url_for_host(host: str) -> str:
@@ -54,6 +62,11 @@ def analysis_url_for_host(host: str) -> str:
 
 def _node_name(organization_id: uuid.UUID) -> str:
     return f"dedicated-{organization_id}"
+
+
+def _details(node: IngestNode) -> dict[str, Any]:
+    raw = node.details
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 async def get_dedicated_node(
@@ -76,69 +89,137 @@ async def get_dedicated_node(
     ).scalar_one_or_none()
 
 
+async def assert_can_go_live(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Subscription active + remaining processing time required to start a live."""
+    try:
+        entitlement = await entitlements.get_entitlement(session, organization_id)
+    except LookupError as exc:
+        raise PermissionDeniedError(
+            "Aucun abonnement actif pour démarrer un live.",
+            code="subscription_required",
+        ) from exc
+    if entitlement.subscription.status not in ACTIVE_SUB_STATUSES:
+        raise PermissionDeniedError(
+            "Votre abonnement ne permet pas de démarrer un live.",
+            code="subscription_inactive",
+        )
+    if entitlement.quota.exhausted:
+        raise PermissionDeniedError(
+            "Quota mensuel épuisé : plus de temps de traitement disponible.",
+            code="quota_exhausted",
+        )
+
+
 async def ensure_dedicated_node(
     session: AsyncSession,
     settings: Settings,
     *,
     organization_id: uuid.UUID,
+    start: bool = True,
 ) -> IngestNode:
-    """Return the org's dedicated spot node, creating/starting it if needed.
-
-    Until full RunInstances automation is wired, a configured
-    `INGEST_PUBLIC_HOST` (or host extracted from `INGEST_RTMPS_URL`) marks the
-    node READY immediately — one shared host can still back early deploys.
-    Per-org spots replace that host once the launcher is enabled.
-    """
+    """Return the org's dedicated spot; launch a unique instance when needed."""
     existing = await get_dedicated_node(session, organization_id)
-    fallback_host = _fallback_hostname(settings)
-
-    if existing is not None:
-        if existing.status is IngestNodeStatus.READY and existing.public_hostname:
-            return existing
-        if fallback_host and (
-            existing.public_hostname is None or existing.status is IngestNodeStatus.STARTING
-        ):
-            existing.public_hostname = fallback_host
-            existing.status = IngestNodeStatus.READY
-            existing.last_heartbeat_at = datetime.now(UTC)
-            await session.flush()
+    if (
+        existing is not None
+        and existing.public_hostname
+        and existing.status in (IngestNodeStatus.READY, IngestNodeStatus.DRAINING)
+    ):
+        # Resume within the idle margin: cancel shutdown, keep the same unique host.
+        details = _details(existing)
+        details.pop("terminate_after", None)
+        existing.details = details
+        existing.status = IngestNodeStatus.READY
+        existing.last_heartbeat_at = datetime.now(UTC)
+        await session.flush()
         return existing
+    if existing is not None and existing.status is IngestNodeStatus.STARTING:
+        return existing
+    if not start:
+        if existing is not None:
+            return existing
+        raise LookupError("no_dedicated_node")
 
     now = datetime.now(UTC)
-    node = IngestNode(
-        id=uuid7(),
-        name=_node_name(organization_id),
-        kind=IngestNodeKind.DEDICATED,
-        status=IngestNodeStatus.READY if fallback_host else IngestNodeStatus.STARTING,
-        region=(settings.s3_region or settings.bedrock_region or "eu-north-1"),
-        instance_type="t4g.small",
-        public_hostname=fallback_host,
-        capacity_streams=1,
-        active_streams=0,
-        launched_at=now if fallback_host else None,
-        details={
-            "organization_id": str(organization_id),
-            "spot": True,
-            "rtmp_port": RTMP_PORT,
-            "analysis_port": ANALYSIS_PORT,
-        },
-    )
-    session.add(node)
+    if existing is None:
+        node = IngestNode(
+            id=uuid7(),
+            name=_node_name(organization_id),
+            kind=IngestNodeKind.DEDICATED,
+            status=IngestNodeStatus.STARTING,
+            region=(
+                settings.ingest_ec2_region
+                or settings.s3_region
+                or settings.bedrock_region
+                or "eu-north-1"
+            ),
+            instance_type=settings.ingest_ec2_instance_type or "t4g.small",
+            public_hostname=None,
+            capacity_streams=1,
+            active_streams=0,
+            launched_at=None,
+            details={
+                "organization_id": str(organization_id),
+                "spot": True,
+                "rtmp_port": RTMP_PORT,
+                "analysis_port": ANALYSIS_PORT,
+            },
+        )
+        session.add(node)
+    else:
+        node = existing
+        node.status = IngestNodeStatus.STARTING
+        node.public_hostname = None
     await session.flush()
+
+    launcher = get_launcher(settings)
+    try:
+        launched = await launcher.launch(
+            organization_id=organization_id, node_name=node.name
+        )
+    except Exception as exc:
+        log.error("ingest_spot_launch_failed", organization_id=str(organization_id), error=str(exc))
+        node.status = IngestNodeStatus.LOST
+        node.terminated_at = datetime.now(UTC)
+        details = _details(node)
+        details["launch_error"] = str(exc)[:500]
+        node.details = details
+        await session.flush()
+        raise
+
+    clash = (
+        await session.execute(
+            select(IngestNode.id).where(
+                IngestNode.public_hostname == launched.public_hostname,
+                IngestNode.id != node.id,
+                IngestNode.status.in_(
+                    (IngestNodeStatus.READY, IngestNodeStatus.STARTING, IngestNodeStatus.DRAINING)
+                ),
+            )
+        )
+    ).scalar_one_or_none()
+    if clash is not None:
+        await launcher.terminate(instance_id=launched.instance_id)
+        node.status = IngestNodeStatus.LOST
+        await session.flush()
+        raise RuntimeError("Ingest host collision — refusing shared fallback")
+
+    node.instance_id = launched.instance_id
+    node.public_hostname = launched.public_hostname
+    node.status = IngestNodeStatus.READY
+    node.launched_at = now
+    node.last_heartbeat_at = now
+    details = _details(node)
+    details.pop("terminate_after", None)
+    details.pop("launch_error", None)
+    node.details = details
+    await session.flush()
+    log.info(
+        "ingest_spot_ready",
+        organization_id=str(organization_id),
+        instance_id=launched.instance_id,
+        host=launched.public_hostname,
+    )
     return node
-
-
-def _fallback_hostname(settings: Settings) -> str | None:
-    host = (settings.ingest_public_host or "").strip() or None
-    if host:
-        return host
-    raw = (settings.ingest_rtmps_url or "").strip()
-    if not raw:
-        return None
-    # rtmp(s)://hostname[:port]/path
-    without_scheme = raw.split("://", 1)[-1]
-    hostport = without_scheme.split("/", 1)[0]
-    return hostport.split(":", 1)[0] or None
 
 
 async def resolve_for_organization(
@@ -148,7 +229,22 @@ async def resolve_for_organization(
     organization_id: uuid.UUID,
 ) -> ResolveResult:
     api = ingest_api_url(settings)
-    node = await ensure_dedicated_node(session, settings, organization_id=organization_id)
+    await assert_can_go_live(session, organization_id)
+    try:
+        node = await ensure_dedicated_node(
+            session, settings, organization_id=organization_id, start=True
+        )
+    except Exception:
+        return ResolveResult(
+            status="unavailable",
+            ingest_api_url=api,
+            rtmp_url=None,
+            analysis_url=None,
+            public_hostname=None,
+            node_id=None,
+            message="Impossible de démarrer votre instance d'ingestion. Réessayez.",
+        )
+
     if node.status is IngestNodeStatus.READY and node.public_hostname:
         host = node.public_hostname
         return ResolveResult(
@@ -158,7 +254,7 @@ async def resolve_for_organization(
             analysis_url=analysis_url_for_host(host),
             public_hostname=host,
             node_id=node.id,
-            message="Instance prête — collez l'URL RTMP dans OBS / Streamlabs.",
+            message="Instance prête — redirection vers votre RTMP dédié.",
         )
     if node.status is IngestNodeStatus.STARTING:
         return ResolveResult(
@@ -168,7 +264,7 @@ async def resolve_for_organization(
             analysis_url=None,
             public_hostname=None,
             node_id=node.id,
-            message="Démarrage de votre instance spot t4g.small — réessayez dans quelques secondes.",
+            message="Démarrage de votre instance spot — réessayez dans quelques secondes.",
         )
     return ResolveResult(
         status="unavailable",
@@ -177,8 +273,85 @@ async def resolve_for_organization(
         analysis_url=None,
         public_hostname=node.public_hostname,
         node_id=node.id,
-        message="Aucune instance d'ingestion disponible pour le moment.",
+        message="Aucune instance d'ingestion disponible.",
     )
+
+
+async def schedule_idle_termination(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    margin: timedelta = IDLE_TERMINATE_MARGIN,
+) -> IngestNode | None:
+    """After RTMP silence: terminate the spot once `margin` has elapsed."""
+    node = await get_dedicated_node(session, organization_id)
+    if node is None or node.status is IngestNodeStatus.TERMINATED:
+        return None
+    details = _details(node)
+    details["terminate_after"] = (datetime.now(UTC) + margin).isoformat()
+    node.details = details
+    node.status = IngestNodeStatus.DRAINING
+    await session.flush()
+    return node
+
+
+async def cancel_idle_termination(
+    session: AsyncSession, *, organization_id: uuid.UUID
+) -> None:
+    node = await get_dedicated_node(session, organization_id)
+    if node is None:
+        return
+    details = _details(node)
+    if "terminate_after" in details:
+        details.pop("terminate_after", None)
+        node.details = details
+        if node.status is IngestNodeStatus.DRAINING and node.public_hostname:
+            node.status = IngestNodeStatus.READY
+        await session.flush()
+
+
+async def terminate_due_nodes(session: AsyncSession, settings: Settings) -> int:
+    """Terminate spots whose idle margin has elapsed. Returns count terminated."""
+    now = datetime.now(UTC)
+    rows = (
+        await session.execute(
+            select(IngestNode).where(
+                IngestNode.kind == IngestNodeKind.DEDICATED,
+                IngestNode.status.in_(
+                    (IngestNodeStatus.DRAINING, IngestNodeStatus.READY, IngestNodeStatus.STARTING)
+                ),
+            )
+        )
+    ).scalars()
+    launcher = get_launcher(settings)
+    terminated = 0
+    for node in rows:
+        details = _details(node)
+        raw = details.get("terminate_after")
+        if not raw:
+            continue
+        try:
+            when = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        if when > now:
+            continue
+        if node.instance_id:
+            try:
+                await launcher.terminate(instance_id=node.instance_id)
+            except Exception as exc:
+                log.error("ingest_spot_terminate_failed", instance_id=node.instance_id, error=str(exc))
+        node.status = IngestNodeStatus.TERMINATED
+        node.terminated_at = now
+        node.public_hostname = None
+        details.pop("terminate_after", None)
+        node.details = details
+        terminated += 1
+    if terminated:
+        await session.flush()
+    return terminated
 
 
 async def mark_node_ready(
@@ -198,5 +371,8 @@ async def mark_node_ready(
     node.last_heartbeat_at = datetime.now(UTC)
     if node.launched_at is None:
         node.launched_at = datetime.now(UTC)
+    details = _details(node)
+    details.pop("terminate_after", None)
+    node.details = details
     await session.flush()
     return node

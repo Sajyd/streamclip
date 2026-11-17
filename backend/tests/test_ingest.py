@@ -16,10 +16,9 @@ HOOK_SECRET = "ingest-hook-test-secret-value-32b"
 @pytest.fixture(autouse=True)
 def _configure_ingest(ctx: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(release, "INGEST_KEYS_AVAILABLE", True)
-    ctx.settings.ingest_public_host = "ingest.test.local"
     ctx.settings.ingest_hook_secret = SecretStr(HOOK_SECRET)
+    # Test env uses FakeSpotLauncher (unique host per org, no shared fallback).
     yield
-    ctx.settings.ingest_public_host = None
     ctx.settings.ingest_hook_secret = None
 
 
@@ -32,14 +31,14 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert body["status"] == "active"
     assert body["stream_key"].startswith(body["public_id"] + "/")
     assert "sc_live_" in body["stream_key"]
-    assert body["ingest_api_url"].endswith("/api/v1/ingest/resolve")
+    assert body["ingest_api_url"].endswith("/rtmp")
     assert body["ingest_online"] is True
     clear = body["stream_key"]
 
     again = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert again.status_code == 200
     assert again.json()["stream_key"] is None  # never re-shown
-    assert again.json()["ingest_api_url"].endswith("/api/v1/ingest/resolve")
+    assert again.json()["ingest_api_url"].endswith("/rtmp")
     assert again.json()["public_id"] == body["public_id"]
 
     rotated = await client.post(f"{API}/ingest/key/rotate", json={}, headers=account.headers)
@@ -53,43 +52,79 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert missing.status_code == 404
 
 
-async def test_resolve_redirects_to_dedicated_rtmp(
-    client: httpx.AsyncClient, ctx: AppContext
+async def test_rtmp_resolve_starts_unique_spot_and_redirects(
+    client: httpx.AsyncClient,
 ) -> None:
-    """API resolve (session or stream key) → dedicated instance RTMP."""
+    """GET /rtmp?key=… → quota OK → unique spot → 302 rtmp://{org-host}/live."""
     account = await register(client, email="ingest-resolve@example.com")
     issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
     clear = issued["stream_key"]
+    org_hex = None
 
-    # Logged-in resolve (no secret re-entry — show-once safe).
+    # Memorable public URL (also available under /api/v1/ingest/resolve).
+    redirected = await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
+    assert redirected.status_code == 302
+    location = redirected.headers["location"]
+    assert location.startswith("rtmp://")
+    assert location.endswith(":1935/live")
+    host = location.removeprefix("rtmp://").split(":")[0]
+    assert host.endswith(".ingest.test")
+    org_hex = host.split(".", 1)[0]
+
+    # Second org must get a different host (no shared fallback).
+    other = await register(client, email="ingest-resolve-b@example.com")
+    other_key = (await client.post(f"{API}/ingest/key", json={}, headers=other.headers)).json()[
+        "stream_key"
+    ]
+    other_redir = await client.get("/rtmp", params={"key": other_key}, follow_redirects=False)
+    assert other_redir.status_code == 302
+    other_host = other_redir.headers["location"].removeprefix("rtmp://").split(":")[0]
+    assert other_host != host
+    assert other_host.split(".", 1)[0] != org_hex
+
+    # Logged-in dashboard resolve returns JSON (no need to re-enter secret).
     resolved = await client.post(f"{API}/ingest/resolve", json={}, headers=account.headers)
     assert resolved.status_code == 200
     body = resolved.json()
     assert body["status"] == "ready"
-    assert body["rtmp_url"] == "rtmp://ingest.test.local:1935/live"
-    assert body["analysis_url"] == "http://ingest.test.local:8080"
+    assert body["rtmp_url"] == location
+    assert body["ingest_api_url"].endswith("/rtmp")
 
-    # Unauthenticated resolve via stream key + optional 302.
-    by_key = await client.post(f"{API}/ingest/resolve", json={"stream_key": clear})
-    assert by_key.status_code == 200
-    assert by_key.json()["rtmp_url"] == body["rtmp_url"]
 
-    redirected = await client.get(
-        f"{API}/ingest/resolve",
-        params={"stream_key": clear},
-        follow_redirects=False,
-    )
-    assert redirected.status_code == 302
-    assert redirected.headers["location"] == "rtmp://ingest.test.local:1935/live"
+async def test_rtmp_resolve_rejects_exhausted_quota(client: httpx.AsyncClient) -> None:
+    account = await register(client, email="ingest-resolve-quota@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    clear = issued["stream_key"]
+    public_id, _, secret = clear.partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
 
-    # Without fallback host a new org's node stays "starting".
-    ctx.settings.ingest_public_host = None
-    other = await register(client, email="ingest-resolve-starting@example.com")
-    await client.post(f"{API}/ingest/key", json={}, headers=other.headers)
-    starting = await client.post(f"{API}/ingest/resolve", json={}, headers=other.headers)
-    assert starting.status_code == 202
-    assert starting.json()["status"] == "starting"
-    assert starting.json()["rtmp_url"] is None
+    # Burn the free quota via a live tick, then resolve must refuse.
+    assert (
+        await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
+    ).status_code == 302
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={
+                "action": "publish",
+                "path": f"live/{public_id}",
+                "protocol": "rtmp",
+                "password": secret,
+            },
+            headers=hook,
+        )
+    ).status_code == 200
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/event",
+            json={"event": "tick", "path": f"live/{public_id}", "processed_ms": 3_600_000},
+            headers=hook,
+        )
+    ).status_code == 200
+
+    blocked = await client.get("/rtmp", params={"key": clear}, follow_redirects=False)
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "quota_exhausted"
 
 
 async def test_mediamtx_auth_opens_session_and_disconnect_closes(
@@ -209,5 +244,5 @@ async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True
     assert caps["ingest_online"] is True
-    assert caps["ingest_api_url"].endswith("/api/v1/ingest/resolve")
+    assert caps["ingest_api_url"].endswith("/rtmp")
     assert caps["live_processing"] is False

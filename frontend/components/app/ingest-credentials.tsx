@@ -89,10 +89,10 @@ function IssueOrRotateForm({
             La clé secrète ne sera plus jamais réaffichée. Si vous la perdez, régénérez-en une depuis
             Paramètres. L&apos;URL API démarre votre instance spot et renvoie l&apos;adresse RTMP.
           </Notice>
-          {resolveUrl ? <CopyField label="URL API (resolve → RTMP)" value={resolveUrl} /> : null}
+          {resolveUrl ? <CopyField label="URL resolve (…/rtmp)" value={resolveUrl} /> : null}
           <CopyField label="Clé secrète (stream key)" value={issued.stream_key} />
           {issued.rtmps_url ? (
-            <CopyField label="Serveur RTMP (instance prête)" value={issued.rtmps_url} />
+            <CopyField label="Serveur RTMP (instance dédiée)" value={issued.rtmps_url} />
           ) : null}
         </div>
       ) : null}
@@ -137,12 +137,12 @@ function PrepareLiveForm({ apiUrl }: { apiUrl: string | null }) {
 
   return (
     <div className="space-y-3 rounded-2xl border border-white/10 bg-ink-950/50 p-4">
-      <p className="text-sm font-medium text-white">Préparer mon live</p>
+      <p className="text-sm font-medium text-white">Démarrer mon live</p>
       <p className="text-xs leading-relaxed text-ink-400">
-        Démarre votre EC2 spot dédié (MediaMTX + analyse). L&apos;API renvoie l&apos;URL RTMP à
-        coller dans OBS avec votre clé secrète (conservée de votre côté).
+        Vérifie le quota, lance votre EC2 spot unique, renvoie l&apos;URL RTMP à coller dans OBS
+        (avec la clé secrète que vous avez sauvegardée).
       </p>
-      {apiUrl ? <CopyField label="URL API" value={apiUrl} /> : null}
+      {apiUrl ? <CopyField label="URL /rtmp" value={apiUrl} /> : null}
       <form action={formAction} className="space-y-3">
         <PendingButton pending={pending} pendingLabel="Démarrage de l'instance…">
           Démarrer mon instance
@@ -190,22 +190,26 @@ export function StreamKeyManager({
   return (
     <div className="space-y-4">
       <Notice tone="neutral" title="Comment ça marche">
-        Une seule <strong className="font-medium text-ink-100">URL API</strong> pour tout le monde.
-        Avec votre clé secrète, elle démarre votre instance spot dédiée et renvoie{" "}
-        <code className="text-ink-200">rtmp://…</code> (MediaMTX). Toutes les 5&nbsp;min, FFmpeg
-        enregistre puis l&apos;analyse met à jour la base — le tableau de bord affiche le résultat.
+        URL mémorisable <code className="text-ink-100">/rtmp</code> + votre clé secrète. Au démarrage
+        du live, STREAMCLIP vérifie votre abonnement et le temps restant, lance votre EC2 spot
+        dédié, puis redirige vers <code className="text-ink-200">rtmp://…</code>. MediaMTX ingère ;
+        toutes les 5&nbsp;min FFmpeg + IA mettent à jour la base. Fin de flux → arrêt du spot (marge
+        5&nbsp;min).
       </Notice>
 
       {!ingestOnline ? (
-        <Notice tone="warn" title="Data plane en cours de déploiement">
-          Vous pouvez déjà créer votre clé et utiliser l&apos;URL API. L&apos;instance spot se
-          lancera dès que le provisionnement EC2 est actif.
+        <Notice tone="warn" title="Lancement d'instances non configuré">
+          Vous pouvez créer votre clé. Le démarrage EC2 spot nécessite la config launcher
+          (AMI / subnet / security group).
         </Notice>
       ) : null}
 
       {resolveUrl ? (
         <div className="rounded-2xl border border-white/10 bg-ink-950/70 p-4">
-          <CopyField label="URL API (resolve → RTMP)" value={resolveUrl} />
+          <CopyField label="URL resolve (…/rtmp)" value={resolveUrl} />
+          <p className="mt-2 text-xs text-ink-400">
+            Exemple : <code className="text-ink-300">{resolveUrl}?key=…</code>
+          </p>
         </div>
       ) : null}
 

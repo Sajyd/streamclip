@@ -10,7 +10,7 @@ export type Capabilities = {
   live_processing: boolean;
   ingest_keys: boolean;
   ingest_online: boolean;
-  /** Stable resolve API — secret key → dedicated RTMP instance. */
+  /** Memorable resolve URL (`…/rtmp`) — secret → unique spot → RTMP. */
   ingest_api_url: string | null;
   social_oauth: boolean;
 };
