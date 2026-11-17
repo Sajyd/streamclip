@@ -154,6 +154,19 @@ async def test_mediamtx_auth_opens_session_and_disconnect_closes(
     )
     assert denied.status_code == 403
 
+    # Local ffmpeg re-reads the path (action=read) — must not be denied.
+    read_ok = await client.post(
+        f"{API}/ingest/hooks/auth",
+        json={
+            "action": "read",
+            "path": f"live/{public_id}",
+            "protocol": "rtmp",
+            "ip": "127.0.0.1",
+        },
+        headers=hook,
+    )
+    assert read_ok.status_code == 200
+
     allowed = await client.post(
         f"{API}/ingest/hooks/auth",
         json={

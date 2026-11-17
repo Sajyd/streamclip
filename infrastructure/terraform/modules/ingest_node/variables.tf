@@ -5,7 +5,19 @@ variable "name" {
 
 variable "bucket_arn" {
   type        = string
-  description = "Media bucket ARN (tmp/ writes for future segment upload)."
+  description = "Media bucket ARN (tmp/ writes for segment upload)."
+}
+
+variable "bucket_name" {
+  type        = string
+  description = "Media bucket name used by aws s3 cp on the edge."
+  default     = ""
+}
+
+variable "aws_region" {
+  type        = string
+  description = "Region for S3 uploads from the edge."
+  default     = "eu-north-1"
 }
 
 variable "api_auth_url" {

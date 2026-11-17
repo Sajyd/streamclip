@@ -392,8 +392,9 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
     """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
-        # Playback / read / api probes are not offered; deny without 422 noise.
-        raise PermissionDeniedError("Action non autorisée.", code="ingest_action_denied")
+        # Local ffmpeg on edge/dedicated re-reads the live path (action=read).
+        # Deny would break segment recording + relay. Hook secret already gates this.
+        return Response(status_code=200)
     public_id = _public_id_from_hook(body)
     secret = _secret_from_hook(body)
     if public_id is None or secret is None:
@@ -424,7 +425,7 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
             organization_id=key.organization_id,
             idempotency_key=f"ensure-node:{key.organization_id}",
         )
-    # Best-effort: start the spot before the edge asks for a relay target.
+    # All plans: start the spot before the edge asks for a relay target.
     from app.tasks.queue import run_due_tasks
 
     await run_due_tasks(

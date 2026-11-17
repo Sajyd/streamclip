@@ -1,8 +1,10 @@
-"""Dedicated compute EC2 nodes (t4g.small spot) per organization.
+"""Dedicated compute EC2 nodes (t4g.small spot) per organization (all plans).
 
 OBS always connects to the shared edge RTMP URL. On publish, the API
 authenticates the stream key, ensures this org's dedicated spot is up, and the
 edge relays the live stream to that instance for 5-min analysis.
+
+Plan differences are quota hours + social connections only — not infrastructure.
 
 When the publisher disconnects, the node is marked for termination after a
 5-minute idle margin.

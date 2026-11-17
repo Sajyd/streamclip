@@ -96,11 +96,20 @@ class AwsSpotLauncher:
         auth_q = _sq(auth_with_secret)
 
         # Native MediaMTX so runOn* can call host ffmpeg / aws / curl.
+        # AL2023 has no ffmpeg package — install static arm64 build.
         script = f"""#!/bin/bash
 set -eo pipefail
-dnf install -y ffmpeg || echo "ffmpeg unavailable"
 dnf install -y awscli || dnf install -y aws-cli || true
 mkdir -p /etc/mediamtx /var/lib/streamclip/segments /var/run/streamclip /usr/local/bin
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  FFDIR=$(mktemp -d)
+  curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"
+  tar -xJf "$FFDIR/ffmpeg.tar.xz" -C "$FFDIR"
+  install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffmpeg /usr/local/bin/ffmpeg
+  install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffprobe /usr/local/bin/ffprobe || true
+  rm -rf "$FFDIR"
+fi
+ffmpeg -version | head -1
 export AWS_DEFAULT_REGION='{region_q}'
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
@@ -178,7 +187,8 @@ curl -fsS -X POST -H "Content-Type: application/json" \\
 OFFREADY
 chmod +x /usr/local/bin/streamclip-on-not-ready
 
-cat > /etc/mediamtx/mediamtx.yml <<YAML
+# Quote heredoc so $MTX_PATH is written literally for MediaMTX to expand at runtime.
+cat > /etc/mediamtx/mediamtx.yml <<'YAML'
 logLevel: info
 rtmp: yes
 rtmpAddress: :1935
@@ -188,13 +198,14 @@ webrtc: no
 hls: no
 rtsp: no
 authMethod: http
-authHTTPAddress: '{auth_q}'
+authHTTPAddress: AUTH_HTTP_ADDRESS_PLACEHOLDER
 pathDefaults:
   runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH
   runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH
 paths:
   all_others:
 YAML
+sed -i "s|AUTH_HTTP_ADDRESS_PLACEHOLDER|{auth_q}|" /etc/mediamtx/mediamtx.yml
 
 cat > /etc/systemd/system/mediamtx.service <<'UNIT'
 [Unit]

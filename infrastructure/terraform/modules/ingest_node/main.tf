@@ -133,6 +133,11 @@ resource "aws_iam_role_policy" "ingest_tmp" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.ingest.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "ingest" {
   name = "${var.name}-profile"
   role = aws_iam_role.ingest.name
@@ -143,11 +148,17 @@ locals {
   relay_url = replace(local.event_url, "/hooks/event", "/hooks/relay-target")
   userdata = <<-EOF
     #!/bin/bash
-    # Shared edge (native MediaMTX): one RTMP URL for all OBS clients, ffmpeg
-    # relay to each org's dedicated compute spot.
+    # Shared edge: one RTMP URL for all OBS clients → ffmpeg relay to dedicated spot.
     set -eo pipefail
-    dnf install -y ffmpeg || echo "ffmpeg unavailable"
     mkdir -p /etc/mediamtx /var/run/streamclip /usr/local/bin
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+      FFDIR=$(mktemp -d)
+      curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"
+      tar -xJf "$FFDIR/ffmpeg.tar.xz" -C "$FFDIR"
+      install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffmpeg /usr/local/bin/ffmpeg
+      install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffprobe /usr/local/bin/ffprobe || true
+      rm -rf "$FFDIR"
+    fi
     AUTH_URL='${var.api_auth_url}'
     EVENT_URL='${local.event_url}'
     RELAY_URL='${local.relay_url}'
