@@ -35,6 +35,8 @@ from app.services import ingest as ingest_service
 from app.services import ingest_nodes
 
 router = APIRouter(tags=["ingest"])
+# Memorable public URL mounted at app root: GET /rtmp?key=…
+public_router = APIRouter(tags=["ingest"])
 
 _PROTOCOL_MAP = {
     "rtmp": IngestProtocol.RTMP,
@@ -109,6 +111,9 @@ def _session_out(stream: StreamSession) -> StreamSessionOut:
 def _require_hook_secret(request: Request, ctx: Ctx) -> None:
     secret = ctx.settings.ingest_hook_secret
     provided = request.headers.get("x-streamclip-ingest-secret", "")
+    if not provided:
+        # MediaMTX 1.11 has no authHTTPAdditionalHeaders; secret rides on the URL.
+        provided = request.query_params.get("ingest_secret", "")
     if (
         secret is None
         or not provided
@@ -188,65 +193,78 @@ async def issue_ingest_key(
     return _key_out(ctx, key, clear_secret=clear, instance_rtmp_url=instance_rtmp)
 
 
+@public_router.get("/rtmp", response_model=None)
+async def rtmp_resolve(
+    ctx: Ctx,
+    key: Annotated[str, Query(min_length=16, max_length=256, description="Stream key")],
+) -> Response:
+    """Memorable resolve: secret → quota → start unique spot → 302 RTMP."""
+    return await _resolve(ctx, stream_key=key, organization_id=None, redirect=True)
+
+
 @router.post("/ingest/resolve", response_model=None)
 async def resolve_ingest_post(
     ctx: Ctx,
     principal: OptionalPrincipal,
     body: IngestResolveRequest | None = None,
 ) -> Response:
-    """Resolve → dedicated RTMP instance.
+    """Dashboard helper: start the logged-in org's spot (JSON, no redirect)."""
+    from app.services.auth import Principal
 
-    Prefer the logged-in org (no secret re-entry). Alternatively pass
-    `stream_key` for unauthenticated resolve/redirect clients.
-    """
-    return await _resolve(ctx, body=body, principal=principal, redirect=False)
+    org_id = principal.organization_id if isinstance(principal, Principal) else None
+    stream_key = body.stream_key if body else None
+    return await _resolve(
+        ctx, stream_key=stream_key, organization_id=org_id, redirect=False
+    )
 
 
 @router.get("/ingest/resolve", response_model=None)
 async def resolve_ingest_get(
     ctx: Ctx,
+    key: Annotated[str | None, Query(min_length=16, max_length=256)] = None,
     stream_key: Annotated[str | None, Query(min_length=16, max_length=256)] = None,
-    redirect: bool = True,
 ) -> Response:
-    """GET with stream_key: optional 302 to rtmp:// when the spot is ready."""
-    body = IngestResolveRequest(stream_key=stream_key) if stream_key else None
-    return await _resolve(ctx, body=body, principal=None, redirect=redirect)
+    """Alias of GET /rtmp (prefer /rtmp)."""
+    secret = key or stream_key
+    if not secret:
+        raise AuthenticationError("Paramètre key requis.", code="unauthenticated")
+    return await _resolve(ctx, stream_key=secret, organization_id=None, redirect=True)
 
 
 async def _resolve(
     ctx: Ctx,
     *,
-    body: IngestResolveRequest | None,
-    principal: OptionalPrincipal | None,
+    stream_key: str | None,
+    organization_id,
     redirect: bool,
 ) -> Response:
-    from app.services.auth import Principal
-
     _require_ingest_keys()
-    if body and body.stream_key:
-        parsed = ingest_service.parse_obs_key(body.stream_key)
-        if parsed is None:
-            raise PermissionDeniedError("Clé d'ingestion invalide.", code="invalid_stream_key")
-        public_id, secret = parsed
-        async with ctx.db.system_tx() as session:
+    async with ctx.db.system_tx() as session:
+        if stream_key:
+            parsed = ingest_service.parse_obs_key(stream_key)
+            if parsed is None:
+                raise PermissionDeniedError(
+                    "Clé d'ingestion invalide.", code="invalid_stream_key"
+                )
+            public_id, secret = parsed
             key = await ingest_service.authenticate_publisher(
                 session, public_id=public_id, secret=secret
             )
-            result = await ingest_nodes.resolve_for_organization(
-                session, ctx.settings, organization_id=key.organization_id
-            )
-    elif isinstance(principal, Principal):
-        async with ctx.db.system_tx() as session:
-            active = await ingest_service.get_active_key(session, principal.organization_id)
+            org_id = key.organization_id
+        elif organization_id is not None:
+            active = await ingest_service.get_active_key(session, organization_id)
             if active is None:
-                raise NotFoundError("Aucune clé d'ingestion active.", code="stream_key_not_found")
-            result = await ingest_nodes.resolve_for_organization(
-                session, ctx.settings, organization_id=principal.organization_id
+                raise NotFoundError(
+                    "Aucune clé d'ingestion active.", code="stream_key_not_found"
+                )
+            org_id = organization_id
+        else:
+            raise AuthenticationError(
+                "Fournissez la clé (?key=) ou connectez-vous.",
+                code="unauthenticated",
             )
-    else:
-        raise AuthenticationError(
-            "Fournissez la clé de stream ou connectez-vous.",
-            code="unauthenticated",
+        result = await ingest_nodes.resolve_for_organization(
+            session, ctx.settings, organization_id=org_id
         )
 
     payload = IngestResolveOut(
@@ -260,6 +278,8 @@ async def _resolve(
     if redirect and result.status == "ready" and result.rtmp_url:
         return RedirectResponse(url=result.rtmp_url, status_code=status.HTTP_302_FOUND)
     code = status.HTTP_202_ACCEPTED if result.status == "starting" else status.HTTP_200_OK
+    if result.status == "unavailable":
+        code = status.HTTP_503_SERVICE_UNAVAILABLE
     return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
 
 
@@ -321,14 +341,15 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
         key = await ingest_service.authenticate_publisher(
             session, public_id=public_id, secret=secret
         )
-        # Publisher reached MediaMTX: ensure dedicated node row and bind session.
-        node = await ingest_nodes.ensure_dedicated_node(
-            session, ctx.settings, organization_id=key.organization_id
+        # Publisher is live on their dedicated spot — cancel idle shutdown.
+        await ingest_nodes.cancel_idle_termination(
+            session, organization_id=key.organization_id
         )
+        node = await ingest_nodes.get_dedicated_node(session, key.organization_id)
         stream = await ingest_service.open_session_for_publish(
             session, key=key, protocol=protocol, remote_ip=body.ip
         )
-        if stream.ingest_node_id is None:
+        if node is not None and stream.ingest_node_id is None:
             stream.ingest_node_id = node.id
             await session.flush()
     return Response(status_code=200)
@@ -372,6 +393,10 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             await ingest_service.close_session(
                 session, stream, reason=StreamEndReason.PUBLISHER_ENDED
             )
+            # No more RTMP data → shut down the spot after a 5-minute margin.
+            await ingest_nodes.schedule_idle_termination(
+                session, organization_id=key.organization_id
+            )
         elif event in ("processed", "tick") and body.processed_ms:
             await ingest_service.record_processed_tick(
                 session, stream, processed_ms=body.processed_ms
@@ -379,6 +404,14 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             queued_transcription = True
         elif event in ("lost", "signal_lost"):
             await ingest_service.close_session(session, stream, reason=StreamEndReason.SIGNAL_LOST)
+            await ingest_nodes.schedule_idle_termination(
+                session, organization_id=key.organization_id
+            )
+        elif event in ("publisher_ready", "start"):
+            await ingest_nodes.cancel_idle_termination(
+                session, organization_id=key.organization_id
+            )
+        await ingest_nodes.terminate_due_nodes(session, ctx.settings)
     if queued_transcription:
         # Serverless: run newly queued analysis tasks before the response returns.
         from app.tasks.queue import run_due_tasks

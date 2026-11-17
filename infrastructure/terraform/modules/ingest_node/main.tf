@@ -142,15 +142,16 @@ locals {
   event_url = var.api_event_url != "" ? var.api_event_url : replace(var.api_auth_url, "/auth", "/event")
   userdata = <<-EOF
     #!/bin/bash
-    set -euo pipefail
-    # AL2023 already ships curl-minimal; do not install the conflicting `curl` package.
+    # No -u: MediaMTX runOn* strings contain $MTX_PATH for later expansion.
+    set -eo pipefail
     dnf install -y docker
-    # ffmpeg is not always in AL2023 base repos; MediaMTX must start anyway.
     dnf install -y ffmpeg || echo "ffmpeg unavailable in repos; install later for segment loop"
     systemctl enable --now docker
-    command -v curl >/dev/null || command -v curl-minimal >/dev/null
     mkdir -p /etc/mediamtx /var/lib/streamclip/segments
-    cat >/etc/mediamtx/mediamtx.yml <<'YAML'
+    AUTH_URL='${var.api_auth_url}'
+    EVENT_URL='${local.event_url}'
+    HOOK='${var.ingest_hook_secret}'
+    cat > /etc/mediamtx/mediamtx.yml <<YAML
     logLevel: info
     rtmp: yes
     rtmpAddress: :1935
@@ -160,30 +161,23 @@ locals {
     hls: no
     rtsp: no
     authMethod: http
-    authHTTPAddress: ${var.api_auth_url}
-    authHTTPAdditionalHeaders:
-      X-Streamclip-Ingest-Secret: "${var.ingest_hook_secret}"
+    authHTTPAddress: $${AUTH_URL}?ingest_secret=$${HOOK}
     pathDefaults:
-      runOnReady: >
-        curl -fsS -X POST
-        -H "Content-Type: application/json"
-        -H "X-Streamclip-Ingest-Secret: ${var.ingest_hook_secret}"
-        -d "{\"event\":\"publisher_ready\",\"path\":\"$MTX_PATH\",\"protocol\":\"rtmp\"}"
-        ${local.event_url}
-      runOnNotReady: >
-        curl -fsS -X POST
-        -H "Content-Type: application/json"
-        -H "X-Streamclip-Ingest-Secret: ${var.ingest_hook_secret}"
-        -d "{\"event\":\"publisher_disconnect\",\"path\":\"$MTX_PATH\",\"protocol\":\"rtmp\"}"
-        ${local.event_url}
+      runOnReady: 'curl -fsS -X POST -H Content-Type:application/json -H "X-Streamclip-Ingest-Secret: $${HOOK}" -d "{\"event\":\"publisher_ready\",\"path\":\"\$MTX_PATH\",\"protocol\":\"rtmp\"}" $${EVENT_URL} || true'
+      runOnNotReady: 'curl -fsS -X POST -H Content-Type:application/json -H "X-Streamclip-Ingest-Secret: $${HOOK}" -d "{\"event\":\"publisher_disconnect\",\"path\":\"\$MTX_PATH\",\"protocol\":\"rtmp\"}" $${EVENT_URL} || true'
     paths:
-      "live/~path":
-        source: publisher
+      all_others:
     YAML
+    sed -i 's/^    //' /etc/mediamtx/mediamtx.yml
+    docker rm -f mediamtx 2>/dev/null || true
     docker run -d --name mediamtx --restart unless-stopped \
-      -p 1935:1935 -p 8890:8890/udp \
+      --network host \
       -v /etc/mediamtx/mediamtx.yml:/mediamtx.yml:ro \
-      bluenviron/mediamtx:1.11.3
+      bluenviron/mediamtx:1.12.3
+    sleep 4
+    docker ps -a > /dev/console || true
+    docker logs mediamtx > /dev/console 2>&1 || true
+    ss -lntp | grep 1935 > /dev/console || true
   EOF
 }
 
