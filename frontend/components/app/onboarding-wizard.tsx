@@ -9,8 +9,8 @@ import {
   saveOnboardingAction,
   type OnboardingPatch,
 } from "@/app/actions/onboarding";
-import { StreamKeyManager } from "@/components/app/ingest-credentials";
 import { LiveDetector } from "@/components/app/live-detector";
+import { ObsRtmpGuide } from "@/components/app/obs-rtmp-guide";
 import { PlanCard } from "@/components/plan-card";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, SubmitButton } from "@/components/ui/form";
@@ -126,60 +126,6 @@ function ChoiceGrid({
           </button>
         );
       })}
-    </div>
-  );
-}
-
-function ObsGuide({
-  software,
-  existingKey,
-  canManage,
-  ingestOnline,
-  apiUrl,
-}: {
-  software: "obs" | "streamlabs";
-  existingKey: StreamKey | null;
-  canManage: boolean;
-  ingestOnline: boolean;
-  apiUrl: string | null;
-}) {
-  const isStreamlabs = software === "streamlabs";
-
-  return (
-    <div className="space-y-5">
-      <StreamKeyManager
-        canManage={canManage}
-        ingestOnline={ingestOnline}
-        apiUrl={apiUrl}
-        existingKey={existingKey}
-        defaultLabel={isStreamlabs ? "Streamlabs" : "OBS"}
-      />
-
-      <ol className="space-y-4">
-        {(isStreamlabs
-          ? [
-              "Créez votre clé et copiez l’URL /rtmp + la clé secrète (affichée une seule fois).",
-              "« Démarrer mon live » : quota OK → EC2 spot dédié → URL RTMP unique.",
-              "Streamlabs → destination Custom RTMP : collez le serveur RTMP + votre clé.",
-              "Gardez Twitch/YouTube en parallèle. STREAMCLIP reçoit une copie du live.",
-              "Fin de live : le spot s’arrête après 5 minutes sans signal RTMP.",
-            ]
-          : [
-              "Créez votre clé et copiez l’URL /rtmp + la clé secrète (une seule fois).",
-              "« Démarrer mon live » lance votre instance spot et renvoie rtmp://… unique.",
-              "OBS → Stream (ou Multiple RTMP Outputs) : Service Personnalisé.",
-              "Serveur = URL RTMP renvoyée. Clé = votre clé secrète complète.",
-              "Toutes les 5 min : enregistrement + analyse → highlights. Fin de flux → arrêt spot (+5 min).",
-            ]
-        ).map((text, index) => (
-          <li key={text} className="flex gap-3">
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-500/20 text-xs font-semibold text-brand-200">
-              {index + 1}
-            </span>
-            <p className="pt-1 text-sm leading-relaxed text-ink-200">{text}</p>
-          </li>
-        ))}
-      </ol>
     </div>
   );
 }
@@ -385,12 +331,12 @@ export function OnboardingWizard({
                 {
                   id: "obs" as const,
                   title: "OBS Studio",
-                  body: "Destination RTMPS personnalisée ou plugin Multiple RTMP Outputs.",
+                  body: "Guide détaillé : installer Multiple RTMP Outputs, puis ajouter STREAMCLIP en parallèle de Twitch/YouTube.",
                 },
                 {
                   id: "streamlabs" as const,
                   title: "Streamlabs Desktop",
-                  body: "Ajoutez une destination Custom RTMP en plus de votre plateforme.",
+                  body: "Guide détaillé : destination Custom RTMP / Multistream, ou plugin OBS en secours.",
                 },
               ] as const
             ).map((option) => (
@@ -417,13 +363,17 @@ export function OnboardingWizard({
         <Card>
           <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Branchement</p>
           <CardTitle className="mt-2 text-xl">
-            {software === "streamlabs" ? "Branchez Streamlabs" : "Branchez OBS"}
+            {software === "streamlabs"
+              ? "Installer & brancher Streamlabs"
+              : "Installer le plugin Multiple RTMP (OBS)"}
           </CardTitle>
           <CardDescription>
-            Créez votre clé STREAMCLIP, collez-la dans votre logiciel, puis continuez.
+            Étapes détaillées pour installer la sortie Multiple RTMP, créer votre clé, démarrer
+            l&apos;instance, puis coller serveur + clé dans{" "}
+            {software === "streamlabs" ? "Streamlabs Desktop" : "OBS Studio"}.
           </CardDescription>
           <div className="mt-6">
-            <ObsGuide
+            <ObsRtmpGuide
               software={software ?? "obs"}
               existingKey={ingestKey}
               canManage={canManage}
