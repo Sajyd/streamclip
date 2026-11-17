@@ -27,27 +27,27 @@ export function IngestPanel({
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Ingestion</p>
+            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
             <CardTitle className="mt-2">Connexion OBS / Streamlabs</CardTitle>
             <CardDescription>
-              Une URL RTMP unique + votre clé secrète. Au live, STREAMCLIP analyse le flux et
-              prépare vos clips. Vos clés Twitch / YouTube / Kick ne sont jamais demandées.
+              Une URL serveur + votre clé secrète. Au live, STREAMCLIP analyse le flux et prépare
+              vos clips. Vos clés Twitch / YouTube / Kick ne sont jamais demandées.
             </CardDescription>
           </div>
           <Badge tone={ingestOnline ? "ok" : "warn"}>
-            {ingestOnline ? "Serveur RTMP en ligne" : "Serveur RTMP hors ligne"}
+            {ingestOnline ? "Serveur en ligne" : "Serveur hors ligne"}
           </Badge>
         </div>
 
         {liveProcessing ? (
           <p className="mt-4 text-sm text-ink-300">
-            Pendant le live, l&apos;analyse tourne toutes les 5&nbsp;min. Les moments détectés
-            apparaissent dans Highlights / Clips.
+            Pendant le live, STREAMCLIP détecte les moments forts. Ils apparaissent dans Highlights
+            et Clips.
           </p>
         ) : (
           <p className="mt-4 text-sm text-ink-300">
-            L&apos;ingestion est prête ; la génération de clips sera activée dès que le traitement
-            live sera ouvert sur cette plateforme.
+            La connexion est prête ; la génération de clips sera activée dès que le live sera ouvert
+            sur cette plateforme.
           </p>
         )}
 
@@ -65,7 +65,7 @@ export function IngestPanel({
       <Card>
         <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Historique</p>
         <CardTitle className="mt-2">Lives récents</CardTitle>
-        <CardDescription>Sessions d&apos;ingestion enregistrées pour cet espace.</CardDescription>
+        <CardDescription>Vos lives enregistrés pour cet espace.</CardDescription>
         {sessions.length === 0 ? (
           <p className="mt-5 text-sm text-ink-400">Aucun live pour le moment.</p>
         ) : (
@@ -85,8 +85,9 @@ export function IngestPanel({
                   </p>
                 </div>
                 <p className="text-ink-300">
-                  {Math.round(session.processed_ms / 1000)} s traités
-                  {session.clips_count > 0 ? ` · ${session.clips_count} clips` : ""}
+                  {session.clips_count > 0
+                    ? `${session.clips_count} clip${session.clips_count > 1 ? "s" : ""}`
+                    : "En cours d’analyse"}
                 </p>
               </li>
             ))}

@@ -96,7 +96,7 @@ export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = fal
                 {loading ? "Chargement…" : "Charger l’extrait"}
               </button>
             ) : (
-              <p className="text-sm text-ink-400">Extrait 1080p bientôt disponible</p>
+              <p className="text-sm text-ink-400">Extrait bientôt disponible</p>
             )}
           </div>
         )}

@@ -21,8 +21,8 @@ export function HighlightsGallery({
       <Card>
         <CardTitle>Aucun highlight pour l’instant</CardTitle>
         <CardDescription className="mt-2">
-          Dès qu’un live est analysé (segments de 5 minutes), les moments viraux apparaissent ici
-          avec sous-titres et score de viralité.
+          Dès qu’un live est analysé, les moments viraux apparaissent ici avec sous-titres et
+          score.
         </CardDescription>
       </Card>
     );

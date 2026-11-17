@@ -31,8 +31,8 @@ export default function HighlightsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-white">Highlights</h1>
         <p className="mt-1 text-sm text-ink-300">
-          Moments viraux détectés sur vos lives — lecture Remotion 9:16 avec sous-titres et cam
-          streamer si détectée.
+          Moments viraux détectés sur vos lives, prêts à publier en format vertical avec
+          sous-titres et cam streamer si détectée.
         </p>
       </div>
       <Suspense

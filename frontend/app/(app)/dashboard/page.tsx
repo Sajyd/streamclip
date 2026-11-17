@@ -117,8 +117,8 @@ async function Dashboard() {
           <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Production</p>
           <CardTitle className="mt-2">Lives et clips</CardTitle>
           <CardDescription className="mt-2 max-w-2xl leading-relaxed">
-            La connexion OBS et la génération de clips seront affichées ici dès que les clés
-            d&apos;ingestion seront activées sur cette plateforme.
+            La connexion OBS et la génération de clips seront affichées ici dès qu&apos;elles
+            seront activées sur cette plateforme.
           </CardDescription>
         </Card>
       )}

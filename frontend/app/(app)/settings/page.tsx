@@ -135,9 +135,9 @@ async function Settings() {
 
         {capabilities.ingest_keys && canManage ? (
           <Card>
-            <CardTitle>Clé d&apos;ingestion</CardTitle>
+            <CardTitle>Clé de diffusion</CardTitle>
             <CardDescription>
-              Une URL RTMP + votre clé secrète (affichée une seule fois). Au live, l&apos;analyse
+              Une URL serveur + votre clé secrète (affichée une seule fois). Au live, l&apos;analyse
               démarre automatiquement.
             </CardDescription>
             <div className="mt-5">

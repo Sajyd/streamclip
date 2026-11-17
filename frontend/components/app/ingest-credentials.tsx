@@ -155,14 +155,14 @@ export function StreamKeyManager({
     <div className="space-y-4">
       {!compact ? (
         <Notice tone="neutral" title="Connexion OBS / Streamlabs">
-          Une URL RTMP unique pour tous. Votre clé secrète identifie votre compte : au démarrage du
-          live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le flux
-          automatiquement toutes les 5&nbsp;min.
+          Une URL serveur unique pour tous. Votre clé secrète identifie votre compte : au démarrage
+          du live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le
+          flux automatiquement.
         </Notice>
       ) : null}
 
       {!ingestOnline ? (
-        <Notice tone="warn" title="Serveur RTMP hors ligne">
+        <Notice tone="warn" title="Serveur hors ligne">
           Vous pouvez créer votre clé ; la connexion OBS sera possible dès le retour en ligne.
         </Notice>
       ) : null}

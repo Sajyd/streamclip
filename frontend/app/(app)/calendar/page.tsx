@@ -27,9 +27,8 @@ async function Calendar() {
       <Card>
         <CardTitle>Bientôt disponible</CardTitle>
         <CardDescription className="mt-2 max-w-xl leading-relaxed">
-          La programmation depuis les highlights, le rendu Remotion au moment de la publication et
-          ce calendrier arrivent ensuite. En attendant, branchez OBS via le guide et consultez vos
-          highlights.
+          La programmation depuis les highlights et ce calendrier arrivent bientôt. En attendant,
+          branchez OBS via le guide et consultez vos highlights.
         </CardDescription>
         <div className="mt-6 flex flex-wrap gap-2">
           <ButtonLink href="/guide" size="sm">
