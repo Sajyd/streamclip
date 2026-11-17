@@ -11,6 +11,7 @@ import html
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -266,12 +267,17 @@ def stop_path(path: str) -> dict:
 
 
 def health() -> dict:
+    with _lock:
+        active = sum(1 for proc in _loops.values() if proc.poll() is None)
     return {
         "ok": True,
         "role": "dedicated-analysis",
         "port": PORT,
         "uptime_s": int(time.time() - _started_at),
         "rtmp_port": 1935,
+        "active_buffers": active,
+        "storage_configured": bool(os.environ.get("S3_BUCKET")),
+        "ffmpeg": bool(shutil.which("ffmpeg") or Path("/usr/local/bin/ffmpeg").is_file()),
     }
 
 
