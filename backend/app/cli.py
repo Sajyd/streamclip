@@ -4,6 +4,8 @@
     python -m app.cli promote-admin --email someone@example.com
     python -m app.cli stripe-sync --webhook-url https://.../api/v1/billing/webhooks/stripe
     python -m app.cli worker [--once]
+    python -m app.cli segment-analyze --session-id ... --video path.mp4
+    python -m app.cli live-loop --session-id ... --input-url rtmp://127.0.0.1/live/...
 
 Configuration comes from the environment, exactly like the API.
 """
@@ -113,6 +115,109 @@ async def _worker(ctx: AppContext, args: argparse.Namespace) -> int:
             await asyncio.sleep(args.poll_interval)
 
 
+async def _segment_analyze(ctx: AppContext, args: argparse.Namespace) -> int:
+    """Analyze one local 5-minute MP4 for an existing stream session."""
+    from pathlib import Path
+    from uuid import UUID
+
+    from app.services.segment_pipeline import analyze_local_segment, load_live_session
+
+    session_id = UUID(args.session_id)
+    video = Path(args.video)
+    exists = await asyncio.to_thread(video.is_file)
+    if not exists:
+        print(f"Video not found: {video}")
+        return 1
+    async with ctx.db.system_tx() as session:
+        stream = await load_live_session(session, session_id)
+        if stream is None:
+            print(f"Unknown stream session {session_id}")
+            return 1
+        result = await analyze_local_segment(
+            session,
+            settings=ctx.settings,
+            storage=ctx.storage,
+            stream=stream,
+            sequence=args.sequence,
+            video_path=video,
+        )
+    print(
+        json.dumps(
+            {
+                "sequence": result.sequence,
+                "moments": result.moments,
+                "key": result.storage_key,
+            }
+        )
+    )
+    return 0
+
+
+async def _live_loop(ctx: AppContext, args: argparse.Namespace) -> int:
+    """Record then analyze every 5 minutes on the ingest instance until live ends."""
+    from pathlib import Path
+    from uuid import UUID
+
+    from app.models.enums import StreamSessionStatus
+    from app.services.segment_pipeline import (
+        load_live_session,
+        record_and_analyze,
+        session_still_live,
+    )
+
+    session_id = UUID(args.session_id)
+    work_dir = Path(args.work_dir)
+    sequence = args.start_sequence
+    while True:
+        async with ctx.db.system_tx() as session:
+            stream = await load_live_session(session, session_id)
+            if stream is None:
+                print(json.dumps({"error": "session_not_found", "session_id": str(session_id)}))
+                return 1
+            if stream.status is StreamSessionStatus.COMPLETED:
+                print(
+                    json.dumps(
+                        {"done": True, "sequence": sequence, "status": stream.status.value}
+                    )
+                )
+                return 0
+            if stream.status is StreamSessionStatus.FAILED:
+                print(json.dumps({"done": True, "failed": True, "status": stream.status.value}))
+                return 1
+            if not session_still_live(stream):
+                print(json.dumps({"done": True, "status": stream.status.value}))
+                return 0
+            try:
+                result = await record_and_analyze(
+                    session,
+                    settings=ctx.settings,
+                    storage=ctx.storage,
+                    stream=stream,
+                    sequence=sequence,
+                    input_url=args.input_url,
+                    work_dir=work_dir,
+                )
+            except Exception as exc:
+                print(json.dumps({"error": str(exc), "sequence": sequence}))
+                if args.stop_on_error:
+                    return 1
+                await asyncio.sleep(5)
+                continue
+        print(
+            json.dumps(
+                {
+                    "sequence": result.sequence,
+                    "moments": len(result.moments),
+                    "key": result.storage_key,
+                    "frames": result.frames,
+                }
+            )
+        )
+        sequence += 1
+        if args.max_sequences and sequence >= args.start_sequence + args.max_sequences:
+            return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +237,22 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--once", action="store_true", help="drain due tasks and exit")
     worker.add_argument("--poll-interval", type=float, default=2.0)
 
+    seg = commands.add_parser("segment-analyze", help="analyze one 5-min MP4 for a live session")
+    seg.add_argument("--session-id", required=True)
+    seg.add_argument("--video", required=True)
+    seg.add_argument("--sequence", type=int, default=0)
+
+    loop = commands.add_parser(
+        "live-loop",
+        help="record+analyze 5-min segments on the ingest node until the live ends",
+    )
+    loop.add_argument("--session-id", required=True)
+    loop.add_argument("--input-url", required=True, help="local MediaMTX URL, e.g. rtmp://127.0.0.1/live/ID")
+    loop.add_argument("--work-dir", default="/var/lib/streamclip/segments")
+    loop.add_argument("--start-sequence", type=int, default=0)
+    loop.add_argument("--max-sequences", type=int, default=0, help="0 = until live ends")
+    loop.add_argument("--stop-on-error", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "migrate":
         return _migrate(args)
@@ -140,7 +261,13 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(settings.log_level, json_logs=settings.environment != "local")
     import app.tasks.handlers  # noqa: F401 - registers the task handlers
 
-    handlers = {"promote-admin": _promote_admin, "stripe-sync": _stripe_sync, "worker": _worker}
+    handlers = {
+        "promote-admin": _promote_admin,
+        "stripe-sync": _stripe_sync,
+        "worker": _worker,
+        "segment-analyze": _segment_analyze,
+        "live-loop": _live_loop,
+    }
 
     async def run() -> int:
         ctx = build_context(settings, use_null_pool=True)

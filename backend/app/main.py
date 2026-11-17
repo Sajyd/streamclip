@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 
-from app.api.v1 import account, admin, auth, billing, clips, ingest, social, system
+from app.api.v1 import account, admin, auth, billing, clips, highlights, ingest, social, system
 from app.context import AppContext, build_context
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -43,7 +43,7 @@ def create_app(settings: Settings | None = None, ctx: AppContext | None = None) 
     application.add_middleware(RequestContextMiddleware, settings=settings)
 
     api = APIRouter(prefix=API_PREFIX)
-    for module in (system, auth, account, billing, admin, ingest, clips, social):
+    for module in (system, auth, account, billing, admin, ingest, clips, highlights, social):
         api.include_router(module.router)
     application.include_router(api)
     return application

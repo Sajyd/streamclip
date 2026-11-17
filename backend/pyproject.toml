@@ -63,6 +63,8 @@ ignore = [
 # Tests: compact multi-part assertions and SQL built from fixed table names are deliberate.
 "tests/**" = ["S101", "S105", "S106", "S311", "S608", "PT012", "PT018"]
 "app/cli.py" = ["T20"]
+# FFmpeg argv is built from trusted local paths / fixed flags, not shell input.
+"app/services/media_ffmpeg.py" = ["S603"]
 # Enum member names and the "token_type" field contain the word, not a secret.
 "app/models/enums.py" = ["S105"]
 "app/schemas/api.py" = ["S105"]

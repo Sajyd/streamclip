@@ -8,13 +8,6 @@ import { buttonClasses } from "@/components/ui/button";
 import { Logo, Skeleton } from "@/components/ui/primitives";
 import { loadSession } from "@/lib/dal";
 
-async function ensureOnboarded() {
-  const session = await loadSession();
-  if (session.status === "authenticated" && !session.me.onboarding.completed) {
-    redirect("/onboarding");
-  }
-}
-
 async function UserMenu() {
   const session = await loadSession();
   if (session.status !== "authenticated") {
@@ -47,8 +40,16 @@ async function UserMenu() {
   );
 }
 
-export default async function AppLayout({ children }: { children: ReactNode }) {
-  await ensureOnboarded();
+/** Session read must sit under Suspense so the layout shell can prerender. */
+async function OnboardingGate({ children }: { children: ReactNode }) {
+  const session = await loadSession();
+  if (session.status === "authenticated" && !session.me.onboarding.completed) {
+    redirect("/onboarding");
+  }
+  return children;
+}
+
+export default function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="page-glow flex min-h-full flex-1 flex-col">
       <header className="sticky top-0 z-40 border-b border-white/5 bg-ink-950/70 backdrop-blur-xl">
@@ -69,7 +70,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <AppNav />
         </div>
       </header>
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">{children}</main>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
+        <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+          <OnboardingGate>{children}</OnboardingGate>
+        </Suspense>
+      </main>
     </div>
   );
 }

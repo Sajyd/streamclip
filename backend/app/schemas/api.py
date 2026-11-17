@@ -218,6 +218,29 @@ class ClipList(ApiModel):
     items: list[ClipOut]
 
 
+class HighlightOut(ApiModel):
+    id: uuid.UUID
+    stream_session_id: uuid.UUID
+    title: str
+    description: str
+    category: str
+    score: float
+    start_ms: int
+    end_ms: int
+    relative_start_ms: int
+    relative_end_ms: int
+    segment_sequence: int
+    hashtags: list[str] = []
+    words: list[dict[str, Any]] = []
+    camera: dict[str, Any] = {}
+    media_available: bool = False
+    created_at: datetime
+
+
+class HighlightList(ApiModel):
+    items: list[HighlightOut]
+
+
 class SocialAccountOut(ApiModel):
     id: uuid.UUID
     platform: str

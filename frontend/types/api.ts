@@ -43,6 +43,31 @@ export type Clip = {
   stream_session_id: string | null;
 };
 
+export type HighlightWord = {
+  text: string;
+  start_ms: number;
+  end_ms: number;
+};
+
+export type Highlight = {
+  id: string;
+  stream_session_id: string;
+  title: string;
+  description: string;
+  category: string;
+  score: number;
+  start_ms: number;
+  end_ms: number;
+  relative_start_ms: number;
+  relative_end_ms: number;
+  segment_sequence: number;
+  hashtags: string[];
+  words: HighlightWord[];
+  camera: { detected: boolean; x: number; y: number };
+  media_available: boolean;
+  created_at: string;
+};
+
 export type SocialAccount = {
   id: string;
   platform: string;

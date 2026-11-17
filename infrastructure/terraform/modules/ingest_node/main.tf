@@ -105,8 +105,11 @@ resource "aws_iam_role_policy" "ingest_tmp" {
         Effect = "Allow"
         Action = [
           "s3:PutObject",
+          "s3:PutObjectTagging",
+          "s3:GetObject",
           "s3:AbortMultipartUpload",
           "s3:ListBucketMultipartUploads",
+          "s3:ListMultipartUploadParts",
         ]
         Resource = ["${var.bucket_arn}/tmp/*"]
       },
@@ -115,8 +118,16 @@ resource "aws_iam_role_policy" "ingest_tmp" {
         Action   = ["s3:ListBucket"]
         Resource = [var.bucket_arn]
         Condition = {
-          StringLike = { "s3:prefix" = ["tmp/*"] }
+          StringLike = { "s3:prefix" = ["tmp/*", "tmp/lives/*"] }
         }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:Converse",
+        ]
+        Resource = ["*"]
       },
     ]
   })
@@ -131,9 +142,9 @@ locals {
   userdata = <<-EOF
     #!/bin/bash
     set -euo pipefail
-    dnf install -y docker
+    dnf install -y docker ffmpeg
     systemctl enable --now docker
-    mkdir -p /etc/mediamtx
+    mkdir -p /etc/mediamtx /var/lib/streamclip/segments
     cat >/etc/mediamtx/mediamtx.yml <<'YAML'
     logLevel: info
     rtmp: yes
@@ -155,6 +166,8 @@ locals {
       -p 1935:1935 -p 8890:8890/udp \
       -v /etc/mediamtx/mediamtx.yml:/mediamtx.yml:ro \
       bluenviron/mediamtx:1.11.3
+    # Segment loop (record 5 min HD → S3 → FFmpeg frames+ASR → Bedrock Luna)
+    # is started per live via: python -m app.cli live-loop --session-id ... --input-url rtmp://127.0.0.1/live/<id>
   EOF
 }
 

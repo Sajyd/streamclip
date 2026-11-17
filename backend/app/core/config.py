@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     asr_base_url: str = "https://api.groq.com/openai/v1"
     asr_model: str = "whisper-large-v3-turbo"
 
+    # --- Bedrock multimodal (Luna / Nova Lite) ------------------------------
+    bedrock_region: str | None = None
+    bedrock_model: str = "amazon.nova-lite-v1:0"
+    # Length of each recorded HD segment on the ingest instance (seconds).
+    segment_duration_sec: int = 300
+
     # --- Operations ---------------------------------------------------------
     cron_secret: SecretStr | None = None
     max_request_body_bytes: int = 1_048_576

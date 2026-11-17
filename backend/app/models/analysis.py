@@ -188,7 +188,8 @@ class HighlightCandidate(Base, IdMixin, TimestampMixin, TenantMixin):
     __table_args__ = (
         Index("ix_highlight_candidates_session_score", "stream_session_id", "score"),
         CheckConstraint("end_ms > start_ms", name="range_ordered"),
-        access(rls="tenant", app=()),
+        # Readable by the tenant (Remotion highlights UI); workers write as system.
+        access(rls="tenant", app=READ),
     )
 
     stream_session_id: Mapped[uuid.UUID] = mapped_column(

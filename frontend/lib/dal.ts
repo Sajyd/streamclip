@@ -11,6 +11,7 @@ import type {
   BillingOverview,
   Clip,
   DataExport,
+  Highlight,
   Me,
   Meta,
   NotificationList,
@@ -126,6 +127,10 @@ export async function getOnboarding(token: string, next: string): Promise<Onboar
 
 export async function getClips(token: string, next: string): Promise<Clip[]> {
   return unwrap(await api<{ items: Clip[] }>("/clips", { token }), next).items;
+}
+
+export async function getHighlights(token: string, next: string): Promise<Highlight[]> {
+  return unwrap(await api<{ items: Highlight[] }>("/highlights", { token }), next).items;
 }
 
 export async function getSocialAccounts(token: string, next: string): Promise<SocialAccountList> {

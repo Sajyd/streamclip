@@ -1,0 +1,359 @@
+"""5-minute live segment pipeline (runs on the ingest t4g.small).
+
+Record HD → S3 → FFmpeg frames (480p / 5s) + ASR → Bedrock Luna (Nova Lite)
+→ persist viral moments. Designed to finish within the next 5-minute window.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings
+from app.core.ids import uuid7
+from app.models.analysis import AnalysisJob, AnalysisWindow, HighlightCandidate
+from app.models.enums import (
+    AnalysisJobKind,
+    CandidateStatus,
+    EventCategory,
+    JobStatus,
+    SegmentKind,
+    SegmentStatus,
+    StreamSessionStatus,
+    WindowStatus,
+)
+from app.models.media import MediaSegment, StreamSession
+from app.services import asr as asr_service
+from app.services.bedrock_luna import BedrockLuna, ViralMoment, moments_to_json
+from app.services.media_ffmpeg import extract_audio_wav, extract_frames_480p, record_segment_copy
+from app.storage.s3 import ObjectStorage
+
+log = structlog.get_logger(__name__)
+
+WINDOW_MS = 5 * 60 * 1000
+FRAME_EVERY_SEC = 5.0
+CATEGORY_MAP: dict[str, EventCategory] = {
+    c.value: c for c in EventCategory
+}
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentResult:
+    sequence: int
+    storage_key: str
+    segment_url: str | None
+    moments: list[dict[str, Any]]
+    frames: int
+    transcript_chars: int
+
+
+def live_segment_key(session_id: uuid.UUID, sequence: int) -> str:
+    """HD 5-min extract under tmp/lives/<session>/ (short retention, per-live folder)."""
+    return f"tmp/lives/{session_id}/seg_{sequence:04d}.mp4"
+
+
+def _map_category(raw: str) -> EventCategory:
+    key = (raw or "other").strip().lower().replace(" ", "_").replace("-", "_")
+    return CATEGORY_MAP.get(key, EventCategory.OTHER)
+
+
+async def persist_segment_analysis(
+    session: AsyncSession,
+    *,
+    stream: StreamSession,
+    sequence: int,
+    storage_key: str,
+    size_bytes: int,
+    moments: list[ViralMoment],
+    transcript_text: str,
+    frames: int,
+    model: str,
+    provider: str,
+) -> SegmentResult:
+    """Write MediaSegment + AnalysisWindow + HighlightCandidates for one 5-min slice."""
+    start_ms = sequence * WINDOW_MS
+    end_ms = start_ms + WINDOW_MS
+    now = datetime.now(UTC)
+
+    existing_seg = (
+        await session.execute(
+            select(MediaSegment).where(
+                MediaSegment.stream_session_id == stream.id,
+                MediaSegment.kind == SegmentKind.AV,
+                MediaSegment.sequence == sequence,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_seg is None:
+        session.add(
+            MediaSegment(
+                id=uuid7(),
+                organization_id=stream.organization_id,
+                stream_session_id=stream.id,
+                kind=SegmentKind.AV,
+                sequence=sequence,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                storage_key=storage_key,
+                size_bytes=size_bytes,
+                status=SegmentStatus.AVAILABLE,
+                expires_at=now + timedelta(days=7),
+            )
+        )
+    else:
+        existing_seg.storage_key = storage_key
+        existing_seg.size_bytes = size_bytes
+        existing_seg.status = SegmentStatus.AVAILABLE
+
+    window = (
+        await session.execute(
+            select(AnalysisWindow).where(
+                AnalysisWindow.stream_session_id == stream.id,
+                AnalysisWindow.sequence == sequence,
+            )
+        )
+    ).scalar_one_or_none()
+    if window is None:
+        window = AnalysisWindow(
+            id=uuid7(),
+            organization_id=stream.organization_id,
+            stream_session_id=stream.id,
+            sequence=sequence,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            status=WindowStatus.ANALYZING,
+        )
+        session.add(window)
+        await session.flush()
+
+    window.status = WindowStatus.ANALYZED
+    window.summary = transcript_text[:4000] if transcript_text else None
+    window.signals = {
+        "pipeline": "segment_luna",
+        "storage_key": storage_key,
+        "frames": frames,
+        "moments": len(moments),
+    }
+    window.analyzed_at = now
+
+    job = AnalysisJob(
+        id=uuid7(),
+        organization_id=stream.organization_id,
+        stream_session_id=stream.id,
+        analysis_window_id=window.id,
+        kind=AnalysisJobKind.MULTIMODAL_ANALYSIS,
+        status=JobStatus.SUCCEEDED,
+        provider=provider,
+        model=model,
+        frames=frames,
+        finished_at=now,
+        details={"moments": moments_to_json(moments), "storage_key": storage_key},
+    )
+    session.add(job)
+
+    # Replace prior candidates for this window sequence (idempotent re-runs).
+    prior = (
+        await session.execute(
+            select(HighlightCandidate).where(
+                HighlightCandidate.stream_session_id == stream.id,
+                HighlightCandidate.context_start_ms == start_ms,
+            )
+        )
+    ).scalars().all()
+    for row in prior:
+        row.status = CandidateStatus.SUPERSEDED
+
+    for moment in moments:
+        abs_start = start_ms + moment.start_ms
+        abs_end = start_ms + moment.end_ms
+        session.add(
+            HighlightCandidate(
+                id=uuid7(),
+                organization_id=stream.organization_id,
+                stream_session_id=stream.id,
+                status=CandidateStatus.CANDIDATE,
+                category=_map_category(moment.category),
+                title=moment.title,
+                summary=moment.description,
+                context_start_ms=start_ms,
+                start_ms=abs_start,
+                payoff_ms=abs_start + (abs_end - abs_start) // 2,
+                end_ms=abs_end,
+                score=Decimal(str(round(moment.score, 3))),
+                score_breakdown={
+                    "virality": moment.score,
+                    "hashtags": moment.hashtags,
+                    "words": moment.words,
+                    "relative_start_ms": moment.start_ms,
+                    "relative_end_ms": moment.end_ms,
+                    "segment_sequence": sequence,
+                    "storage_key": storage_key,
+                },
+                verification={
+                    "source": "luna",
+                    "model": model,
+                    "camera": {
+                        "detected": moment.camera.detected,
+                        "x": moment.camera.x,
+                        "y": moment.camera.y,
+                    },
+                },
+            )
+        )
+
+    stream.processed_ms = max(stream.processed_ms or 0, end_ms)
+    stream.media_duration_ms = max(stream.media_duration_ms or 0, end_ms)
+    stream.clips_count = (stream.clips_count or 0) + len(moments)
+
+    return SegmentResult(
+        sequence=sequence,
+        storage_key=storage_key,
+        segment_url=None,
+        moments=moments_to_json(moments),
+        frames=frames,
+        transcript_chars=len(transcript_text),
+    )
+
+
+async def analyze_local_segment(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    storage: ObjectStorage | None,
+    stream: StreamSession,
+    sequence: int,
+    video_path: Path,
+) -> SegmentResult:
+    """FFmpeg frames + ASR + Bedrock + DB persist for one local MP4."""
+    with tempfile.TemporaryDirectory(prefix="streamclip-seg-") as tmp:
+        tmp_dir = Path(tmp)
+        frames_dir = tmp_dir / "frames"
+        wav_path = tmp_dir / "audio.wav"
+        frames = await asyncio.to_thread(
+            extract_frames_480p, video_path, frames_dir, every_seconds=FRAME_EVERY_SEC
+        )
+        await asyncio.to_thread(extract_audio_wav, video_path, wav_path)
+        audio_bytes = await asyncio.to_thread(_read_audio, wav_path)
+
+        provider = asr_service.build_asr(settings)
+        transcript = await provider.transcribe(audio_bytes, content_type="audio/wav")
+        words = [
+            {"text": w.text, "start_ms": w.start_ms, "end_ms": w.end_ms} for w in transcript.words
+        ]
+
+        model = settings.bedrock_model or "amazon.nova-lite-v1:0"
+        moments: list[ViralMoment] = []
+        if frames:
+            luna = BedrockLuna(settings)
+            moments = await _run_luna(
+                luna,
+                transcript_text=transcript.text,
+                transcript_words=words,
+                frame_paths=frames,
+            )
+
+        size_bytes, body = await asyncio.to_thread(_read_video, video_path)
+        storage_key = live_segment_key(stream.id, sequence)
+        if storage is not None:
+            await storage.put_object(
+                storage_key, body, content_type="video/mp4", short_retention=True
+            )
+
+        result = await persist_segment_analysis(
+            session,
+            stream=stream,
+            sequence=sequence,
+            storage_key=storage_key,
+            size_bytes=size_bytes,
+            moments=moments,
+            transcript_text=transcript.text,
+            frames=len(frames),
+            model=model,
+            provider="bedrock",
+        )
+        log.info(
+            "segment_analyzed",
+            session_id=str(stream.id),
+            sequence=sequence,
+            moments=len(moments),
+            frames=len(frames),
+        )
+        return result
+
+
+async def _run_luna(
+    luna: BedrockLuna,
+    *,
+    transcript_text: str,
+    transcript_words: list[dict[str, Any]],
+    frame_paths: list[Path],
+) -> list[ViralMoment]:
+    return await asyncio.to_thread(
+        luna.analyze,
+        transcript_text=transcript_text,
+        transcript_words=transcript_words,
+        frame_paths=frame_paths,
+    )
+
+
+def _read_video(path: Path) -> tuple[int, bytes]:
+    return path.stat().st_size, path.read_bytes()
+
+
+def _read_audio(path: Path) -> bytes:
+    return path.read_bytes() if path.exists() else b""
+
+
+def _prepare_work_file(work_dir: Path, sequence: int) -> Path:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return work_dir / f"seg_{sequence:04d}.mp4"
+
+
+async def record_and_analyze(
+    session: AsyncSession,
+    *,
+    settings: Settings,
+    storage: ObjectStorage | None,
+    stream: StreamSession,
+    sequence: int,
+    input_url: str,
+    work_dir: Path,
+) -> SegmentResult:
+    """Record `SEGMENT_SEC` from ingest, then analyze within the next window."""
+    out = await asyncio.to_thread(_prepare_work_file, work_dir, sequence)
+    await asyncio.to_thread(
+        record_segment_copy, input_url, out, duration_sec=settings.segment_duration_sec
+    )
+    return await analyze_local_segment(
+        session,
+        settings=settings,
+        storage=storage,
+        stream=stream,
+        sequence=sequence,
+        video_path=out,
+    )
+
+
+async def load_live_session(session: AsyncSession, session_id: uuid.UUID) -> StreamSession | None:
+    return (
+        await session.execute(select(StreamSession).where(StreamSession.id == session_id))
+    ).scalar_one_or_none()
+
+
+def session_still_live(stream: StreamSession) -> bool:
+    return stream.status in {
+        StreamSessionStatus.PENDING,
+        StreamSessionStatus.LIVE,
+        StreamSessionStatus.INTERRUPTED,
+        StreamSessionStatus.FINALIZING,
+    }
