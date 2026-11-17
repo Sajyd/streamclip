@@ -84,26 +84,34 @@ function SocialGlyph() {
 const STAGES = [
   {
     id: "obs",
-    label: "OBS / Streamlabs",
-    sub: "Votre live, inchangé",
+    label: "Vous diffusez",
+    sub: "Comme d’habitude sur Twitch, YouTube ou Kick",
+    detail:
+      "Ajoutez STREAMCLIP comme destination en plus dans OBS ou Streamlabs : votre live principal continue normalement, on reçoit juste une copie.",
     Glyph: ObsGlyph,
   },
   {
     id: "streamclip",
-    label: "STREAMCLIP",
-    sub: "Analyse toutes les 5 min",
+    label: "STREAMCLIP analyse",
+    sub: "Les meilleurs moments sont repérés en continu",
+    detail:
+      "Pendant le live, on repère automatiquement les passages qui valent le coup — rires, actions, punches — sans que vous ayez à tout revoir après.",
     Glyph: StreamclipGlyph,
   },
   {
     id: "clips",
-    label: "Clips 9:16",
-    sub: "Moments forts prêts",
+    label: "Des clips prêts",
+    sub: "Courts, verticaux et sous-titrés",
+    detail:
+      "Chaque moment fort devient un clip mobile déjà découpé, recadré et sous-titré, prêt pour Shorts, TikTok et Reels.",
     Glyph: ClipGlyph,
   },
   {
     id: "social",
-    label: "Vos réseaux",
-    sub: "Publication auto",
+    label: "Vous publiez",
+    sub: "En un clic, ou automatiquement",
+    detail:
+      "Publiez directement sur YouTube, TikTok et Instagram, ou téléchargez les clips pour le faire vous-même.",
     Glyph: SocialGlyph,
   },
 ] as const;
@@ -117,19 +125,21 @@ export function ConceptFlow() {
   const animate = !reduceMotion;
 
   return (
-    <div className="relative">
+    <div id="fonctionnement" className="relative scroll-mt-20">
       <div className="mx-auto max-w-2xl text-center">
-        <p className="text-xs font-medium tracking-[0.22em] text-brand-300 uppercase">Le concept</p>
-        <h2 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-          Une URL RTMP, des clips qui s&apos;enchaînent
+        <p className="text-xs font-medium tracking-[0.22em] text-brand-300 uppercase">
+          Fonctionnement
+        </p>
+        <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+          Du direct au clip, sans montage
         </h2>
-        <p className="mt-3 text-sm leading-relaxed text-ink-300 sm:text-base">
-          Vous diffusez comme d&apos;habitude. STREAMCLIP reçoit une copie du flux, détecte les
-          moments forts et prépare des verticales prêtes à publier.
+        <p className="mt-4 text-base leading-relaxed text-ink-300">
+          STREAMCLIP regarde votre live à votre place et en sort les meilleurs moments en clips
+          prêts à poster — vous n’avez qu’à brancher une destination en plus dans OBS.
         </p>
       </div>
 
-      <div className="relative mt-10 min-h-[28rem] overflow-hidden rounded-[2rem] border border-white/10 bg-ink-950/80 sm:mt-12 sm:min-h-[32rem] lg:min-h-[36rem]">
+      <div className="relative mt-10 min-h-[28rem] overflow-hidden rounded-[2rem] border border-white/10 bg-ink-950/80 sm:mt-12 sm:min-h-[32rem] lg:min-h-[34rem]">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_30%_20%,rgba(0,19,222,0.28),transparent_55%),radial-gradient(ellipse_at_80%_70%,rgba(51,88,255,0.16),transparent_50%)]"
@@ -146,7 +156,7 @@ export function ConceptFlow() {
         />
 
         {/* Desktop schematic */}
-        <div className="relative hidden h-full min-h-[36rem] lg:block">
+        <div className="relative hidden h-full min-h-[34rem] lg:block">
           <svg
             className="absolute inset-0 size-full"
             viewBox="0 0 1000 280"
@@ -208,14 +218,14 @@ export function ConceptFlow() {
               : null}
           </svg>
 
-          <ol className="absolute inset-0 grid grid-cols-4 px-6 py-16 xl:px-12">
+          <ol className="absolute inset-0 grid grid-cols-4 px-4 py-14 xl:px-10">
             {STAGES.map((stage, index) => {
               const Glyph = stage.Glyph;
               const isCenter = stage.id === "streamclip";
               return (
                 <motion.li
                   key={stage.id}
-                  className="relative flex flex-col items-center justify-center text-center"
+                  className="relative flex flex-col items-center justify-center px-2 text-center"
                   initial={animate ? { opacity: 0, y: 28 } : false}
                   whileInView={{ opacity: 1, y: 0 }}
                   viewport={{ once: true, amount: 0.35 }}
@@ -224,8 +234,8 @@ export function ConceptFlow() {
                   <div
                     className={
                       isCenter
-                        ? "relative flex size-36 items-center justify-center rounded-full border border-brand-400/40 bg-brand-500/15 shadow-[0_0_48px_-12px_rgba(0,33,243,0.75)]"
-                        : "relative flex size-32 items-center justify-center"
+                        ? "relative flex size-32 items-center justify-center rounded-full border border-brand-400/40 bg-brand-500/15 shadow-[0_0_48px_-12px_rgba(0,33,243,0.75)] xl:size-36"
+                        : "relative flex size-28 items-center justify-center xl:size-32"
                     }
                   >
                     {!isCenter ? (
@@ -250,11 +260,11 @@ export function ConceptFlow() {
                       />
                     ) : null}
                   </div>
-                  <p className="mt-6 text-base font-semibold text-white">{stage.label}</p>
-                  <p className="mt-1 max-w-[11rem] text-sm text-ink-300">{stage.sub}</p>
-                  <span className="mt-3 font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/80">
+                  <p className="mt-5 font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/80">
                     {String(index + 1).padStart(2, "0")}
-                  </span>
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-white xl:text-lg">{stage.label}</p>
+                  <p className="mt-1 max-w-[13rem] text-sm text-ink-300">{stage.sub}</p>
                 </motion.li>
               );
             })}
@@ -306,12 +316,25 @@ export function ConceptFlow() {
                   </p>
                   <p className="mt-1 text-lg font-semibold text-white">{stage.label}</p>
                   <p className="mt-1 text-sm text-ink-300">{stage.sub}</p>
+                  <p className="mt-2 text-sm leading-relaxed text-ink-400">{stage.detail}</p>
                 </motion.div>
               </li>
             );
           })}
         </ol>
       </div>
+
+      {/* Detail row under the diagram (desktop) — technical bits live here */}
+      <ol className="mt-8 hidden gap-4 lg:grid lg:grid-cols-4">
+        {STAGES.map((stage, index) => (
+          <li key={stage.id} className="px-1">
+            <p className="font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/70">
+              {String(index + 1).padStart(2, "0")} · {stage.label}
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-ink-300">{stage.detail}</p>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

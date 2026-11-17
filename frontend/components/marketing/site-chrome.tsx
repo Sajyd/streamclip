@@ -48,7 +48,8 @@ export function SiteFooter() {
         <div>
           <Logo />
           <p className="mt-3 max-w-sm text-sm leading-relaxed text-ink-400">
-            Une URL RTMP, votre clé, et vos meilleurs moments en clips 9:16 sous-titrés.
+            STREAMCLIP sort les meilleurs moments de votre live en clips verticaux sous-titrés,
+            prêts à poster.
           </p>
         </div>
         <nav aria-label="Informations légales" className="flex flex-wrap gap-x-6 gap-y-2 text-sm">

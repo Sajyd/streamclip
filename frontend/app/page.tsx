@@ -7,25 +7,6 @@ import { SiteFooter, SiteHeader } from "@/components/marketing/site-chrome";
 import { ButtonLink } from "@/components/ui/button";
 import { Notice } from "@/components/ui/primitives";
 
-const STEPS = [
-  {
-    title: "Ajoutez STREAMCLIP dans OBS",
-    body: "Serveur rtmp://rtmp.streamclip.fr/live + votre clé secrète, en destination supplémentaire. Votre diffusion Twitch / YouTube / Kick ne change pas.",
-  },
-  {
-    title: "Votre live est analysé en continu",
-    body: "Parole, réactions et image sont croisées toutes les 5 minutes pour repérer les moments qui méritent un clip.",
-  },
-  {
-    title: "Les clips se préparent tout seuls",
-    body: "Chaque moment fort est découpé (30–60 s), recadré en 9:16 et sous-titré, prêt pour Shorts, TikTok et Reels.",
-  },
-  {
-    title: "Publiez en un clic",
-    body: "Connectez YouTube, TikTok et Instagram : STREAMCLIP peut publier automatiquement vos meilleurs clips.",
-  },
-];
-
 const FEATURES = [
   {
     title: "Détection multimodale",
@@ -57,7 +38,7 @@ const QUESTIONS = [
   {
     question: "Dois-je communiquer ma clé de stream ou mes mots de passe ?",
     answer:
-      "Non. Vous envoyez une copie de votre flux vers STREAMCLIP avec une clé d'ingestion qui lui est propre. Nous ne demandons jamais vos clés de diffusion ni les mots de passe de vos comptes Twitch, YouTube, Kick ou de vos réseaux sociaux.",
+      "Non. Vous ajoutez STREAMCLIP comme destination supplémentaire dans OBS : on ne touche jamais à vos clés Twitch, YouTube ou Kick, ni à vos mots de passe.",
   },
   {
     question: "Comment ma consommation est-elle comptée ?",
@@ -77,7 +58,7 @@ const QUESTIONS = [
   {
     question: "Comment connecter OBS ou Streamlabs ?",
     answer:
-      "Service = Personnalisé, serveur = rtmp://rtmp.streamclip.fr/live, clé = celle affichée une seule fois dans votre espace. Au démarrage du live, STREAMCLIP vérifie votre abonnement et lance l'analyse automatiquement.",
+      "Dans OBS ou Streamlabs, ajoutez une destination personnalisée avec le serveur et la clé fournis dans votre espace STREAMCLIP. Dès que vous lancez le live, l’analyse démarre toute seule.",
   },
   {
     question: "La publication sur les réseaux est-elle automatique ?",
@@ -150,8 +131,8 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
                 <span className="text-gradient">clips verticaux</span> prêts à publier
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
-                Connectez OBS avec une URL RTMP, STREAMCLIP analyse votre live et livre des clips
-                9:16 sous-titrés pour YouTube Shorts, TikTok et Instagram.
+                STREAMCLIP regarde votre live pendant que vous streamez et en sort les meilleurs
+                moments en clips verticaux sous-titrés, prêts pour Shorts, TikTok et Reels.
               </p>
               <div className="mt-9 flex flex-wrap gap-3">
                 <ButtonLink href="/register" size="lg">
@@ -171,27 +152,6 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
 
           <div className="relative mx-auto w-full max-w-6xl px-4 pb-20 sm:px-6 lg:pb-28">
             <ConceptFlow />
-          </div>
-        </section>
-
-        <section id="fonctionnement" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
-          <div className="mx-auto w-full max-w-6xl px-4 sm:px-6">
-            <SectionHeading
-              eyebrow="Fonctionnement"
-              title="Du direct au clip, sans montage"
-              intro="Quatre étapes, dont une seule vous demande une action."
-            />
-            <ol className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {STEPS.map((step, index) => (
-                <li key={step.title} className="surface relative p-6">
-                  <span className="flex size-9 items-center justify-center rounded-xl bg-brand-500/15 font-mono text-sm font-semibold text-brand-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <h3 className="mt-4 text-base font-semibold text-white">{step.title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-ink-300">{step.body}</p>
-                </li>
-              ))}
-            </ol>
           </div>
         </section>
 
