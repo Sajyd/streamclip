@@ -114,9 +114,8 @@ async function Dashboard() {
           <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Production</p>
           <CardTitle className="mt-2">Lives et clips</CardTitle>
           <CardDescription className="mt-2 max-w-2xl leading-relaxed">
-            La connexion de votre logiciel de diffusion et la génération de clips ne sont pas encore
-            ouvertes sur la plateforme. Votre compte et votre offre sont prêts : cet espace affichera
-            vos lives et vos clips dès l&apos;ouverture du traitement.
+            La connexion OBS et la génération de clips seront affichées ici dès que les clés
+            d&apos;ingestion seront activées sur cette plateforme.
           </CardDescription>
         </Card>
       )}

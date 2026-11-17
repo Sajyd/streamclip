@@ -99,14 +99,14 @@ async function Billing({ searchParams }: { searchParams: SearchParams }) {
           La souscription en ligne n&apos;est pas activée sur cette plateforme pour le moment.
         </Notice>
       ) : salesClosed ? (
-        <Notice tone="brand" title="Offres payantes bientôt disponibles">
-          Les offres payantes ouvriront en même temps que le traitement des lives. D&apos;ici là, votre
-          compte reste sur l&apos;offre gratuite et rien ne vous est facturé.
+        <Notice tone="brand" title="Offres payantes temporairement fermées">
+          Les abonnements payants ne sont pas proposés pour le moment. Votre compte reste sur
+          l&apos;offre gratuite.
         </Notice>
       ) : overview.billing_test_mode ? (
-        <Notice tone="warn" title="Paiements en mode test">
-          Aucune carte réelle n&apos;est débitée. Pour essayer, utilisez la carte de test
-          4242 4242 4242 4242, une date d&apos;expiration future et un cryptogramme quelconque.
+        <Notice tone="warn" title="Stripe en mode test">
+          Les clés Stripe de production ne sont pas encore configurées : aucune carte réelle
+          n&apos;est débitée. Carte de test : 4242 4242 4242 4242.
         </Notice>
       ) : null}
 

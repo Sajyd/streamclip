@@ -68,15 +68,19 @@ export function Logo({ className }: { className?: string }) {
   const gradientId = useId();
   return (
     <span className={cx("inline-flex items-center gap-2 font-semibold tracking-tight", className)}>
-      <svg viewBox="0 0 32 32" aria-hidden className="size-7">
+      {/*
+        viewBox keeps equal left/right padding around the phone mark
+        (4 units each side). Play triangle is optically centered in the phone.
+      */}
+      <svg viewBox="0 0 24 32" aria-hidden className="h-7 w-[1.3125rem]">
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stopColor="#0021f3" />
             <stop offset="1" stopColor="#0013de" />
           </linearGradient>
         </defs>
-        <rect x="8" y="2" width="16" height="28" rx="5" fill={`url(#${gradientId})`} />
-        <path d="M14 11.5v9l7-4.5z" fill="#010014" />
+        <rect x="4" y="2" width="16" height="28" rx="5" fill={`url(#${gradientId})`} />
+        <path d="M10 11.2v9.6l8.2-4.8z" fill="#010014" />
       </svg>
       <span className="text-white">STREAMCLIP</span>
     </span>

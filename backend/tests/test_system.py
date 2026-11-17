@@ -83,13 +83,12 @@ async def test_meta_describes_real_capabilities(client: httpx.AsyncClient) -> No
         "billing": True,
         "billing_test_mode": True,
         "storage": True,
-        # Clip generation is not shipped yet; ingest keys are available.
-        "live_processing": False,
+        "live_processing": True,
         "ingest_keys": True,
         "ingest_online": False,
         "ingest_rtmp_url": None,
         "ingest_api_url": "http://app.test/rtmp",
-        "social_oauth": False,
+        "social_oauth": True,
     }
 
 

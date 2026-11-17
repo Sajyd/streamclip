@@ -67,7 +67,7 @@ export function PricingFallback() {
   );
 }
 
-/** Says plainly what is not open yet, from what the platform reports. */
+/** Banner only while lives/clips are still gated off. */
 export async function AvailabilityNotice() {
   await connection();
   const info = await getPublicInfo();
@@ -76,10 +76,9 @@ export async function AvailabilityNotice() {
   }
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pt-6 sm:px-6">
-      <Notice tone="brand" title="Accès anticipé">
-        Le traitement des lives et la génération de clips ne sont pas encore ouverts. Vous pouvez dès
-        maintenant créer votre compte, choisir une offre et gérer vos données ; cette page décrit le
-        service tel qu&apos;il fonctionnera à son ouverture.
+      <Notice tone="brand" title="Ouverture en cours">
+        Le traitement des lives sera disponible sous peu. Vous pouvez déjà créer votre compte et
+        préparer votre clé d&apos;ingestion.
       </Notice>
     </div>
   );

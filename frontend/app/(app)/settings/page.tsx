@@ -13,11 +13,18 @@ import {
 import { resendVerificationAction } from "@/app/actions/auth";
 import { AutoRefresh } from "@/components/app/auto-refresh";
 import { StreamKeyManager } from "@/components/app/ingest-credentials";
+import { SocialConnections } from "@/components/app/social-connections";
 import { buttonClasses } from "@/components/ui/button";
 import { Field, Form, FormMessage, SelectField, SubmitButton } from "@/components/ui/form";
 import { Badge, Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
 import { PASSWORD_MIN_LENGTH, SUPPORTED_TIME_ZONES } from "@/lib/constants";
-import { getAuthSessions, getDataExports, getIngestKey, requireSession } from "@/lib/dal";
+import {
+  getAuthSessions,
+  getDataExports,
+  getIngestKey,
+  getSocialAccounts,
+  requireSession,
+} from "@/lib/dal";
 import { describeUserAgent, formatBytes, formatDateTime } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Paramètres" };
@@ -28,10 +35,13 @@ async function Settings() {
   const { token, me } = await requireSession(PATH);
   const { user, organization, capabilities } = me;
   const canManage = organization.role === "owner" || organization.role === "admin";
-  const [sessions, exports, ingestKey] = await Promise.all([
+  const [sessions, exports, ingestKey, social] = await Promise.all([
     getAuthSessions(token, PATH),
     capabilities.storage && canManage ? getDataExports(token, PATH) : Promise.resolve([]),
     capabilities.ingest_keys && canManage ? getIngestKey(token, PATH) : Promise.resolve(null),
+    capabilities.social_oauth && canManage
+      ? getSocialAccounts(token, PATH)
+      : Promise.resolve({ items: [], oauth_available: false, platforms: [] }),
   ]);
   const timeZone = user.timezone;
   const timeZones = SUPPORTED_TIME_ZONES.includes(timeZone as (typeof SUPPORTED_TIME_ZONES)[number])
@@ -127,8 +137,8 @@ async function Settings() {
           <Card>
             <CardTitle>Clé d&apos;ingestion</CardTitle>
             <CardDescription>
-              Une URL RTMP + votre clé secrète (affichée une seule fois). Au live, le flux est
-              relayé vers votre instance EC2 dédiée.
+              Une URL RTMP + votre clé secrète (affichée une seule fois). Au live, l&apos;analyse
+              démarre automatiquement.
             </CardDescription>
             <div className="mt-5">
               <StreamKeyManager
@@ -138,6 +148,18 @@ async function Settings() {
                 existingKey={ingestKey}
                 timeZone={timeZone}
               />
+            </div>
+          </Card>
+        ) : null}
+
+        {capabilities.social_oauth && canManage ? (
+          <Card>
+            <CardTitle>Réseaux sociaux</CardTitle>
+            <CardDescription>
+              Connectez YouTube, TikTok et Instagram pour publier automatiquement vos clips.
+            </CardDescription>
+            <div className="mt-5">
+              <SocialConnections initial={social} canManage={canManage} />
             </div>
           </Card>
         ) : null}

@@ -389,15 +389,20 @@ export function OnboardingWizard({
           <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Réseaux</p>
           <CardTitle className="mt-2 text-xl">Où publiez-vous vos clips ?</CardTitle>
           <CardDescription>
-            Sélectionnez vos plateformes. Vous pourrez toujours télécharger les clips et les publier
-            vous-même depuis le tableau de bord.
+            Choisissez YouTube, TikTok et/ou Instagram. Après l&apos;onboarding, connectez vos
+            comptes dans Paramètres pour activer la publication automatique.
           </CardDescription>
-          {!socialOauth ? (
-            <Notice tone="neutral" title="Publication automatique bientôt" className="mt-4">
-              La connexion OAuth officielle n’est pas encore ouverte. Indiquez vos réseaux : dès
-              l’ouverture, un clic suffira. En attendant, téléchargez et publiez manuellement.
+          {socialOauth ? (
+            <Notice tone="ok" title="Publication automatique disponible" className="mt-4">
+              Une fois vos réseaux connectés, STREAMCLIP peut publier vos clips dès qu&apos;ils sont
+              prêts. Vous pourrez aussi toujours télécharger et publier manuellement.
             </Notice>
-          ) : null}
+          ) : (
+            <Notice tone="neutral" title="Publication manuelle" className="mt-4">
+              Indiquez vos réseaux préférés. Vous pourrez télécharger vos clips et les publier
+              vous-même depuis le tableau de bord.
+            </Notice>
+          )}
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             {SOCIALS.map((platform) => {
               const selected = socials.includes(platform.id);

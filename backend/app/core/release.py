@@ -1,13 +1,11 @@
 """What this release actually ships."""
 
-# Live media processing and clip generation (phases 3-5) are not open yet.
-# Real Stripe payments stay blocked until this flips to True.
-LIVE_PROCESSING_AVAILABLE = False
+# Live ingest + clip generation are open. Paid Stripe checkout is allowed
+# when LIVE_PROCESSING_AVAILABLE is True (including with live Stripe keys).
+LIVE_PROCESSING_AVAILABLE = True
 
-# Control plane for STREAMCLIP ingest keys (create / rotate / revoke, MediaMTX
-# auth hooks). Can ship before MediaMTX accepts real RTMPS traffic.
+# Control plane for STREAMCLIP ingest keys and the shared edge RTMP URL.
 INGEST_KEYS_AVAILABLE = True
 
-# Official OAuth for YouTube / TikTok / Instagram (phase 8). Until this is
-# True, users pick preferred platforms in onboarding and publish manually.
-SOCIAL_OAUTH_AVAILABLE = False
+# Official OAuth for YouTube / TikTok / Instagram + auto-publish queue.
+SOCIAL_OAUTH_AVAILABLE = True

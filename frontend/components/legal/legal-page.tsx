@@ -48,9 +48,9 @@ export function PublisherIdentity() {
         <p>Le service STREAMCLIP est édité par {publisher.identity}.</p>
       ) : (
         <p>
-          Le service STREAMCLIP est actuellement proposé en accès anticipé. L&apos;identité complète
-          de l&apos;éditeur (dénomination, adresse, immatriculation) sera publiée sur cette page avant
-          toute ouverture commerciale.
+          Le service STREAMCLIP est opéré en production. L&apos;identité complète de l&apos;éditeur
+          (dénomination, adresse, immatriculation) est publiée sur cette page dès qu&apos;elle est
+          renseignée dans la configuration du site.
         </p>
       )}
       {publisher.contact ? (

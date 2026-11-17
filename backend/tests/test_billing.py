@@ -156,15 +156,15 @@ async def test_checkout_uses_the_catalogue_price_never_a_client_value(
     assert "billing.checkout_started" in actions
 
 
-async def test_real_money_is_not_taken_before_live_processing_ships(
+async def test_live_stripe_sales_require_live_processing_flag(
     client: httpx.AsyncClient,
     fake_stripe: FakeStripeGateway,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Test-mode subscriptions exercise the whole flow; live keys must not sell
-    a service that does not exist yet."""
+    """With live Stripe keys, paid plans stay closed until live processing ships."""
     account = await register(client)
     monkeypatch.setattr(fake_stripe, "livemode", True)
+    monkeypatch.setattr(release, "LIVE_PROCESSING_AVAILABLE", False)
 
     plans = (await client.get(f"{API}/plans")).json()["items"]
     assert not any(plan["purchasable"] for plan in plans)

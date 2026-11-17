@@ -146,16 +146,15 @@ export function StreamKeyManager({
   return (
     <div className="space-y-4">
       <Notice tone="neutral" title="Connexion OBS / Streamlabs">
-        Une seule URL RTMP pour tout le monde. Votre clé secrète identifie votre compte : au
-        démarrage du live, STREAMCLIP vérifie l&apos;abonnement et les heures restantes, allume
-        votre instance EC2 dédiée, y relaie le flux, et lance l&apos;analyse toutes les 5&nbsp;min.
-        Fin de live → arrêt du spot (marge 5&nbsp;min).
+        Une URL RTMP unique pour tous. Votre clé secrète identifie votre compte : au démarrage du
+        live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le flux
+        automatiquement toutes les 5&nbsp;min.
       </Notice>
 
       {!ingestOnline ? (
-        <Notice tone="warn" title="Ingestion hors ligne">
-          Le serveur RTMP edge n&apos;est pas encore configuré (INGEST_PUBLIC_HOST). Vous pouvez
-          créer une clé ; la connexion OBS sera disponible dès que l&apos;edge est en ligne.
+        <Notice tone="warn" title="Serveur RTMP hors ligne">
+          Le serveur d&apos;ingestion n&apos;est pas disponible pour le moment. Vous pouvez créer
+          votre clé ; la connexion OBS sera possible dès le retour en ligne.
         </Notice>
       ) : null}
 

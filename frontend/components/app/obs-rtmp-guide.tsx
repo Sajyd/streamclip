@@ -396,9 +396,8 @@ export function ObsRtmpGuide({
           </li>
           <li>
             2. Dans OBS / Streamlabs : Serveur ={" "}
-            <code className="text-ink-100">{rtmpUrl ?? "rtmp://…:1935/live"}</code>, Clé = votre
-            stream key. Au démarrage du live, votre instance EC2 dédiée s&apos;allume
-            automatiquement.
+            <code className="text-ink-100">{rtmpUrl ?? "rtmp://rtmp.streamclip.fr/live"}</code>, Clé =
+            votre stream key. Au démarrage du live, l&apos;analyse démarre automatiquement.
           </li>
           <li>
             3. Suivez le guide {isStreamlabs ? "Streamlabs" : "OBS"} pour la sortie Multiple RTMP

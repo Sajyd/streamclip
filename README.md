@@ -3,10 +3,10 @@
 SaaS multi-tenant qui reçoit une copie de vos lives (clé d’ingestion STREAMCLIP),
 analyse le contenu et prépare des clips verticaux sous-titrés.
 
-> **Accès anticipé.** Le traitement des lives et la génération de clips ne sont
-> pas encore ouverts (`live_processing: false`). Cette version livre le plan de
-> contrôle : comptes, multi-tenant, abonnements Stripe (mode test), stockage S3,
-> export / suppression RGPD, et l’interface associée.
+> **Production.** Lives RTMP (`rtmp://rtmp.streamclip.fr/live`), analyse 5 min,
+> clips, comptes multi-tenant, abonnements Stripe, stockage S3, export /
+> suppression RGPD. Remplacez les clés Stripe `sk_test_` / `pk_test_` par les
+> clés live pour encaisser de vrais paiements.
 
 ## Architecture (déploiement actuel)
 

@@ -38,6 +38,10 @@
       "destination": { "service": "api" }
     },
     {
+      "source": "/api/v1/social/(.*)",
+      "destination": { "service": "api" }
+    },
+    {
       "source": "/api/v1/internal/(.*)",
       "destination": { "service": "api" }
     },

@@ -33,14 +33,14 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert body["status"] == "active"
     assert body["stream_key"].startswith(body["public_id"] + "/")
     assert "sc_live_" in body["stream_key"]
-    assert body["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
+    assert body["rtmps_url"] == "rtmp://edge.ingest.test/live"
     assert body["ingest_online"] is True
     clear = body["stream_key"]
 
     again = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert again.status_code == 200
     assert again.json()["stream_key"] is None  # never re-shown
-    assert again.json()["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
+    assert again.json()["rtmps_url"] == "rtmp://edge.ingest.test/live"
     assert again.json()["public_id"] == body["public_id"]
 
     rotated = await client.post(f"{API}/ingest/key/rotate", json={}, headers=account.headers)
@@ -63,7 +63,7 @@ async def test_relay_target_starts_unique_dedicated_spot(
     public_id = issued["public_id"]
     hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
 
-    assert issued["rtmps_url"] == "rtmp://edge.ingest.test:1935/live"
+    assert issued["rtmps_url"] == "rtmp://edge.ingest.test/live"
 
     relay = await client.get(
         f"{API}/ingest/hooks/relay-target",
@@ -250,5 +250,5 @@ async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True
     assert caps["ingest_online"] is True
-    assert caps["ingest_rtmp_url"] == "rtmp://edge.ingest.test:1935/live"
-    assert caps["live_processing"] is False
+    assert caps["ingest_rtmp_url"] == "rtmp://edge.ingest.test/live"
+    assert caps["live_processing"] is True

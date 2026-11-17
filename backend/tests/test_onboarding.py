@@ -76,7 +76,9 @@ async def test_onboarding_defaults_then_persists(
     ]
 
 
-async def test_clips_list_empty_and_social_oauth_closed(client: httpx.AsyncClient) -> None:
+async def test_clips_list_empty_and_social_oauth_connect_dev(
+    client: httpx.AsyncClient,
+) -> None:
     account = await register(client)
     clips = await client.get(f"{API}/clips", headers=account.headers)
     assert clips.status_code == 200
@@ -86,11 +88,15 @@ async def test_clips_list_empty_and_social_oauth_closed(client: httpx.AsyncClien
     assert social.status_code == 200
     body = social.json()
     assert body["items"] == []
-    assert body["oauth_available"] is False
+    assert body["oauth_available"] is True
     assert set(body["platforms"]) == {"youtube", "tiktok", "instagram"}
 
     connect = await client.post(
         f"{API}/social/accounts/youtube/connect", headers=account.headers
     )
-    assert connect.status_code == 503
-    assert connect.json()["error"]["code"] == "social_oauth_unavailable"
+    assert connect.status_code == 200
+    assert "authorize_url" in connect.json()
+
+    listed = await client.get(f"{API}/social/accounts", headers=account.headers)
+    assert listed.status_code == 200
+    assert any(item["platform"] == "youtube" for item in listed.json()["items"])

@@ -9,19 +9,19 @@ import { Notice } from "@/components/ui/primitives";
 const STEPS = [
   {
     title: "Ajoutez STREAMCLIP dans OBS",
-    body: "Copiez l'adresse RTMPS ou SRT et votre clé d'ingestion personnelle comme destination supplémentaire. Votre diffusion habituelle ne change pas.",
+    body: "Serveur rtmp://rtmp.streamclip.fr/live + votre clé secrète, en destination supplémentaire. Votre diffusion Twitch / YouTube / Kick ne change pas.",
   },
   {
     title: "Votre live est analysé en continu",
-    body: "La parole, les réactions, l'image et le contexte sont croisés pour repérer les moments qui méritent un clip.",
+    body: "Dès le démarrage, votre instance dédiée analyse parole, réactions et image toutes les 5 minutes pour repérer les moments viraux.",
   },
   {
     title: "Les clips se préparent tout seuls",
-    body: "Chaque moment fort est découpé au bon endroit, recadré en 9:16 et sous-titré, pour une durée de 45 à 60 secondes.",
+    body: "Chaque moment fort est découpé (30–60 s), recadré en 9:16 et sous-titré, prêt pour Shorts, TikTok et Reels.",
   },
   {
     title: "Téléchargez ou publiez",
-    body: "Retrouvez vos clips dans votre bibliothèque, téléchargez-les ou envoyez-les vers vos réseaux.",
+    body: "Retrouvez vos clips dans votre bibliothèque, téléchargez-les ou publiez-les sur vos réseaux.",
   },
 ];
 
@@ -74,9 +74,14 @@ const QUESTIONS = [
       "Oui, depuis votre espace. Le passage à une offre supérieure est immédiat, le passage à une offre inférieure prend effet à la fin de la période déjà payée, et une résiliation vous laisse l'accès jusqu'à cette date.",
   },
   {
+    question: "Comment connecter OBS ou Streamlabs ?",
+    answer:
+      "Service = Personnalisé, serveur = rtmp://rtmp.streamclip.fr/live, clé = celle affichée une seule fois dans votre espace. Au démarrage du live, STREAMCLIP vérifie votre abonnement et relaie le flux vers votre instance EC2 dédiée.",
+  },
+  {
     question: "La publication sur les réseaux est-elle automatique ?",
     answer:
-      "Elle dépend de ce que chaque plateforme autorise à votre compte. Quand une publication directe n'est pas possible, le clip reste disponible au téléchargement.",
+      "Pour l'instant, téléchargez vos clips et publiez-les vous-même. La connexion OAuth officielle (YouTube, TikTok, Instagram) arrivera ensuite ; vos préférences sont déjà enregistrées à l'onboarding.",
   },
   {
     question: "Que deviennent mes vidéos et mes données ?",
@@ -144,19 +149,20 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
                 <span className="text-gradient">clips verticaux</span> prêts à publier
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
-                STREAMCLIP suit votre live, repère les moments forts et prépare des clips 9:16
-                sous-titrés pour YouTube Shorts, TikTok et Instagram.
+                Connectez OBS en une URL RTMP, STREAMCLIP allume votre instance, analyse le live et
+                livre des clips 9:16 sous-titrés pour YouTube Shorts, TikTok et Instagram.
               </p>
               <div className="mt-9 flex flex-wrap gap-3">
                 <ButtonLink href="/register" size="lg">
-                  Créer mon compte gratuit
+                  Commencer gratuitement
                 </ButtonLink>
                 <ButtonLink href="/#tarifs" size="lg" variant="secondary">
                   Voir les offres
                 </ButtonLink>
               </div>
               <p className="mt-5 text-sm text-ink-400">
-                1 heure de live offerte chaque mois, sans carte bancaire.
+                1&nbsp;h de traitement offerte / mois · abonnements sécurisés via Stripe · sans
+                engagement
               </p>
             </div>
             <ClipIllustration />
@@ -252,13 +258,14 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
               />
               <div className="relative">
                 <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-                  Prêt à essayer sur votre prochain live&nbsp;?
+                  Prêt pour votre prochain live&nbsp;?
                 </h2>
                 <p className="mt-4 text-ink-300">
-                  Créez votre compte en une minute. Sans carte bancaire.
+                  Compte gratuit en une minute, puis passez à une offre payante quand vous en avez
+                  besoin — paiement sécurisé Stripe.
                 </p>
                 <ButtonLink href="/register" size="lg" className="mt-8">
-                  Créer mon compte gratuit
+                  Commencer gratuitement
                 </ButtonLink>
               </div>
             </div>

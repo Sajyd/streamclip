@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     stripe_secret_key: SecretStr | None = None
     stripe_webhook_secret: SecretStr | None = None
 
+    # --- Social OAuth (YouTube / TikTok / Instagram) -------------------------
+    social_oauth_redirect_url: str | None = None
+    social_google_client_id: str | None = None
+    social_google_client_secret: SecretStr | None = None
+    social_tiktok_client_key: str | None = None
+    social_tiktok_client_secret: SecretStr | None = None
+    social_meta_app_id: str | None = None
+    social_meta_app_secret: SecretStr | None = None
+
     # --- Object storage (S3) ------------------------------------------------
     # Custom names: Vercel reserves the AWS_* variables for its own runtime.
     s3_bucket: str | None = None

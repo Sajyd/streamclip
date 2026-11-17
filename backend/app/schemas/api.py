@@ -251,12 +251,32 @@ class SocialAccountOut(ApiModel):
     status: str
     display_name: str
     connected_at: datetime
+    auto_publish: bool = False
 
 
 class SocialAccountList(ApiModel):
     items: list[SocialAccountOut]
     oauth_available: bool
     platforms: list[str]
+
+
+class SocialConnectOut(ApiModel):
+    authorize_url: str
+    platform: str
+
+
+class SocialAutoPublishRequest(ApiModel):
+    platforms: list[Literal["youtube", "tiktok", "instagram"]] = []
+
+
+class SocialPublishRequest(ApiModel):
+    platforms: list[Literal["youtube", "tiktok", "instagram"]] | None = None
+
+
+class SocialPublishResult(ApiModel):
+    queued: int
+    publication_ids: list[uuid.UUID]
+    message: str
 
 
 class UpdateProfileRequest(ApiModel):

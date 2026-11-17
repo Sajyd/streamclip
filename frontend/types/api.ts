@@ -78,6 +78,7 @@ export type SocialAccount = {
   status: string;
   display_name: string;
   connected_at: string;
+  auto_publish?: boolean;
 };
 
 export type SocialAccountList = {

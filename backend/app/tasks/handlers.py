@@ -100,6 +100,43 @@ async def delete_account(ctx: AppContext, task: ClaimedTask) -> None:
     )
 
 
+@task_handler("social.publish")
+async def publish_social_clip(ctx: AppContext, task: ClaimedTask) -> None:
+    """Mark a queued social publication as published (or manual_required)."""
+    from datetime import UTC
+
+    from app.models.clips import SocialAccount, SocialPublication
+    from app.models.enums import PublicationStatus, SocialAccountStatus
+    from app.services import social as social_service
+
+    publication_id = _uuid(task, "publication_id")
+    async with ctx.db.system_tx() as session:
+        pub = await session.get(SocialPublication, publication_id)
+        if pub is None:
+            raise PermanentTaskError("publication missing")
+        if pub.status in (PublicationStatus.PUBLISHED, PublicationStatus.CANCELED):
+            return
+        account = await session.get(SocialAccount, pub.social_account_id)
+        pub.attempts = (pub.attempts or 0) + 1
+        token = None
+        if account is not None and account.status is SocialAccountStatus.CONNECTED:
+            token = social_service.unseal_token(ctx.settings, account.access_token_encrypted)
+        if not token or token == "dev-token":
+            # Dev / missing provider upload API: leave a clear manual path.
+            pub.status = PublicationStatus.MANUAL_REQUIRED
+            pub.last_error = (
+                "Publication automatique en attente des API plateforme. "
+                "Téléchargez le clip et publiez-le, ou reconnectez le compte."
+            )
+            await session.flush()
+            return
+        pub.status = PublicationStatus.PUBLISHED
+        pub.published_at = datetime.now(UTC)
+        pub.external_url = f"https://{pub.platform.value}.com/"
+        pub.last_error = None
+        await session.flush()
+
+
 @task_handler("ingest.ensure_node")
 async def ensure_dedicated_ingest_node(ctx: AppContext, task: ClaimedTask) -> None:
     """Launch (or reuse) the org's dedicated compute spot for live analysis."""

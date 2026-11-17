@@ -30,9 +30,8 @@ export function IngestPanel({
             <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Ingestion</p>
             <CardTitle className="mt-2">Connexion OBS / Streamlabs</CardTitle>
             <CardDescription>
-              Une URL RTMP unique + votre clé secrète. Au live, le backend relaie le flux vers
-              votre instance EC2 dédiée pour l&apos;analyse. Vos clés Twitch / YouTube / Kick ne
-              sont jamais demandées.
+              Une URL RTMP unique + votre clé secrète. Au live, STREAMCLIP analyse le flux et
+              prépare vos clips. Vos clés Twitch / YouTube / Kick ne sont jamais demandées.
             </CardDescription>
           </div>
           <Badge tone={ingestOnline ? "ok" : "warn"}>
@@ -40,12 +39,17 @@ export function IngestPanel({
           </Badge>
         </div>
 
-        {!liveProcessing ? (
+        {liveProcessing ? (
           <p className="mt-4 text-sm text-ink-300">
-            La génération de clips n&apos;est pas encore ouverte : un live reçu permettra de valider
-            l&apos;ingestion, sans production de clips.
+            Pendant le live, l&apos;analyse tourne toutes les 5&nbsp;min. Les moments détectés
+            apparaissent dans Highlights / Clips.
           </p>
-        ) : null}
+        ) : (
+          <p className="mt-4 text-sm text-ink-300">
+            L&apos;ingestion est prête ; la génération de clips sera activée dès que le traitement
+            live sera ouvert sur cette plateforme.
+          </p>
+        )}
 
         <div className="mt-5">
           <StreamKeyManager
