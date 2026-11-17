@@ -1,7 +1,7 @@
-"""5-minute live segment pipeline (runs on the ingest t4g.small).
+"""5-minute live segment pipeline.
 
-Record HD -> S3 -> FFmpeg frames (480p / 5s) + ASR -> Bedrock GPT-6 Luna
--> persist viral moments. Designed to finish within the next 5-minute window.
+HD segment (MediaMTX record → S3) is kept full quality for highlights.
+Analysis only: low-def WebP stills (12/min) + ASR transcript → Bedrock Luna.
 """
 
 from __future__ import annotations
@@ -35,13 +35,18 @@ from app.models.enums import (
 from app.models.media import MediaSegment, StreamSession
 from app.services import asr as asr_service
 from app.services.bedrock_luna import BedrockLuna, ViralMoment, moments_to_json
-from app.services.media_ffmpeg import extract_audio_wav, extract_frames_480p, record_segment_copy
+from app.services.media_ffmpeg import (
+    ANALYSIS_FRAME_EVERY_SEC,
+    extract_audio_wav,
+    extract_frames_webp_low,
+    record_segment_copy,
+)
 from app.storage.s3 import ObjectStorage
 
 log = structlog.get_logger(__name__)
 
 WINDOW_MS = 5 * 60 * 1000
-FRAME_EVERY_SEC = 5.0
+FRAME_EVERY_SEC = ANALYSIS_FRAME_EVERY_SEC
 CATEGORY_MAP: dict[str, EventCategory] = {
     c.value: c for c in EventCategory
 }
@@ -277,7 +282,10 @@ async def analyze_local_segment(
         frames_dir = tmp_dir / "frames"
         wav_path = tmp_dir / "audio.wav"
         frames = await asyncio.to_thread(
-            extract_frames_480p, video_path, frames_dir, every_seconds=FRAME_EVERY_SEC
+            extract_frames_webp_low,
+            video_path,
+            frames_dir,
+            every_seconds=FRAME_EVERY_SEC,
         )
         await asyncio.to_thread(extract_audio_wav, video_path, wav_path)
         audio_bytes = await asyncio.to_thread(_read_audio, wav_path)

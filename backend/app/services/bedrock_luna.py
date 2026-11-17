@@ -1,8 +1,9 @@
 """Bedrock multimodal analysis with OpenAI GPT-6 Luna.
 
-Given 480p frames + a full 5-minute transcript, returns non-overlapping viral
-moments (30-60 s, prefer 60 s), word timings, virality score, title,
-hashtagged description, and optional streamer-cam position on a 1920x1080 plane.
+Given low-def WebP frames (12/min) + a full 5-minute transcript, returns
+non-overlapping viral moments (30-60 s, prefer 60 s), word timings, virality
+score, title, hashtagged description, and optional streamer-cam position on a
+1920x1080 plane. The HD segment itself is never re-encoded for analysis.
 """
 
 from __future__ import annotations
@@ -180,7 +181,7 @@ class BedrockLuna:
             content.append(
                 {
                     "image": {
-                        "format": "jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "png",
+                        "format": _image_format(path),
                         "source": {"bytes": data},
                     }
                 }
@@ -223,6 +224,19 @@ def moments_to_json(moments: list[ViralMoment]) -> list[dict[str, Any]]:
         }
         for m in moments
     ]
+
+
+_IMAGE_FORMATS = {
+    ".jpg": "jpeg",
+    ".jpeg": "jpeg",
+    ".png": "png",
+    ".gif": "gif",
+    ".webp": "webp",
+}
+
+
+def _image_format(path: Path) -> str:
+    return _IMAGE_FORMATS.get(path.suffix.lower(), "webp")
 
 
 def encode_frame_b64(path: Path) -> str:

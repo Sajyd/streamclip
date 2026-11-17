@@ -8,9 +8,8 @@
 logLevel: info
 logDestinations: [stdout]
 
-# 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC preview).
-# Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
-writeQueueSize: 2048
+# 1080p60 bursts + HLS remux: large reader queue (power of 2 only).
+writeQueueSize: 8192
 readTimeout: 60s
 writeTimeout: 60s
 
@@ -37,7 +36,14 @@ rtsp: no
 pathDefaults:
   # Only authenticated publishers may write; nobody reads from here publicly.
   source: publisher
-  record: no
+  # Native record keeps full publisher quality (1080p/60fps bitstream).
+  # Local compose: under /recordings (create via volume if needed).
+  record: yes
+  recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 5m
+  recordDeleteAfter: 2h
   # Auth webhook (MediaMTX v1.9+). Headers carry our shared secret.
   overridePublisher: yes
 

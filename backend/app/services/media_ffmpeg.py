@@ -58,15 +58,22 @@ def require_ffmpeg() -> str:
     raise FFmpegError("ffmpeg not found on PATH")
 
 
-def extract_frames_480p(
+# 12 frames / minute → one every 5s. Used only for Luna analysis (not the HD segment).
+FRAMES_PER_MINUTE = 12
+ANALYSIS_FRAME_EVERY_SEC = 60.0 / FRAMES_PER_MINUTE
+ANALYSIS_FRAME_HEIGHT = 360
+
+
+def extract_frames_webp_low(
     video_path: Path,
     out_dir: Path,
     *,
-    every_seconds: float = 5.0,
+    every_seconds: float = ANALYSIS_FRAME_EVERY_SEC,
+    height: int = ANALYSIS_FRAME_HEIGHT,
 ) -> list[Path]:
-    """Extract one JPEG frame every `every_seconds` at max 480p height."""
+    """Extract low-def WebP stills for Luna (HD segment stays untouched)."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    pattern = out_dir / "frame_%04d.jpg"
+    pattern = out_dir / "frame_%04d.webp"
     ffmpeg = require_ffmpeg()
     cmd = [
         ffmpeg,
@@ -74,13 +81,29 @@ def extract_frames_480p(
         "-i",
         str(video_path),
         "-vf",
-        f"fps=1/{every_seconds},scale=-2:480",
-        "-q:v",
-        "5",
+        f"fps=1/{every_seconds},scale=-2:{height}",
+        "-c:v",
+        "libwebp",
+        "-quality",
+        "35",
+        "-compression_level",
+        "4",
         str(pattern),
     ]
-    _run(cmd, label="extract_frames")
-    return sorted(out_dir.glob("frame_*.jpg"))
+    _run(cmd, label="extract_frames_webp")
+    return sorted(out_dir.glob("frame_*.webp"))
+
+
+def extract_frames_480p(
+    video_path: Path,
+    out_dir: Path,
+    *,
+    every_seconds: float = ANALYSIS_FRAME_EVERY_SEC,
+) -> list[Path]:
+    """Backward-compatible alias → low-def WebP at 12 frames/min."""
+    return extract_frames_webp_low(
+        video_path, out_dir, every_seconds=every_seconds, height=ANALYSIS_FRAME_HEIGHT
+    )
 
 
 def extract_audio_wav(video_path: Path, wav_path: Path) -> Path:
