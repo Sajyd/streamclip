@@ -19,23 +19,42 @@ from app.schemas.api import (
     Message,
     NotificationList,
     NotificationOut,
+    OnboardingOut,
     OrganizationOut,
     PasswordConfirmation,
+    UpdateOnboardingRequest,
     UpdateOrganizationRequest,
     UpdateProfileRequest,
     UrlResponse,
     UserOut,
 )
 from app.services import account_data, notifications
+from app.services import onboarding as onboarding_service
 from app.services.audit import audit
 
 router = APIRouter(tags=["account"])
+
+
+def _onboarding_out(data: dict) -> OnboardingOut:
+    return OnboardingOut(
+        completed=bool(data.get("completed")),
+        step=str(data.get("step") or "welcome"),
+        referral_source=data.get("referral_source"),
+        usage=data.get("usage"),
+        software=data.get("software"),
+        social_platforms=list(data.get("social_platforms") or []),
+        ingest_ready=bool(data.get("ingest_ready")),
+        premium_choice=data.get("premium_choice"),
+        live_detected=bool(data.get("live_detected")),
+        completed_at=data.get("completed_at"),
+    )
 
 
 @router.get("/me", response_model=MeResponse)
 async def get_me(principal: CurrentPrincipal, ctx: Ctx) -> MeResponse:
     async with ctx.db.system_tx() as session:
         user = await session.get_one(User, principal.user_id)
+        onboarding = await onboarding_service.get_onboarding(session, principal.user_id)
     # Tenant-scoped read: the filter is explicit and row-level security
     # independently guarantees no other organization can be returned.
     async with ctx.db.tenant_tx(principal.tenant) as session:
@@ -50,7 +69,32 @@ async def get_me(principal: CurrentPrincipal, ctx: Ctx) -> MeResponse:
             id=organization.id, name=organization.name, role=principal.membership_role.value
         ),
         capabilities=capabilities(ctx),
+        onboarding=_onboarding_out(onboarding),
     )
+
+
+@router.get("/onboarding", response_model=OnboardingOut)
+async def get_onboarding(principal: CurrentPrincipal, ctx: Ctx) -> OnboardingOut:
+    async with ctx.db.system_tx() as session:
+        data = await onboarding_service.get_onboarding(session, principal.user_id)
+    return _onboarding_out(data)
+
+
+@router.patch("/onboarding", response_model=OnboardingOut)
+async def update_onboarding(
+    body: UpdateOnboardingRequest, principal: CurrentPrincipal, ctx: Ctx, meta: Meta
+) -> OnboardingOut:
+    patch = body.model_dump(exclude_unset=True, exclude={"complete"})
+    async with ctx.db.system_tx() as session:
+        data = await onboarding_service.save_onboarding(
+            session,
+            user_id=principal.user_id,
+            organization_id=principal.organization_id,
+            patch=patch,
+            meta=meta,
+            mark_complete=body.complete,
+        )
+    return _onboarding_out(data)
 
 
 @router.patch("/me", response_model=UserOut)

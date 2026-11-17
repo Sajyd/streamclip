@@ -127,6 +127,8 @@ class Capabilities(ApiModel):
     ingest_keys: bool
     # True when a public ingest hostname is configured (publish URLs ready).
     ingest_online: bool
+    # Official OAuth for social networks (YouTube / TikTok / Instagram).
+    social_oauth: bool
 
 
 class MetaResponse(ApiModel):
@@ -137,10 +139,97 @@ class MetaResponse(ApiModel):
     terms_version: str
 
 
+class OnboardingOut(ApiModel):
+    completed: bool
+    step: str
+    referral_source: str | None = None
+    usage: str | None = None
+    software: str | None = None
+    social_platforms: list[str] = []
+    ingest_ready: bool = False
+    premium_choice: Literal["free", "premium"] | None = None
+    live_detected: bool = False
+    completed_at: str | None = None
+
+
+class UpdateOnboardingRequest(ApiModel):
+    step: Annotated[str | None, Field(max_length=64)] = None
+    referral_source: (
+        Literal[
+            "youtube",
+            "twitch",
+            "tiktok",
+            "instagram",
+            "x",
+            "discord",
+            "friend",
+            "search",
+            "other",
+        ]
+        | None
+    ) = None
+    usage: (
+        Literal[
+            "gaming",
+            "vlog",
+            "podcast",
+            "concert",
+            "interview",
+            "just_chatting",
+            "irl",
+            "conference",
+            "other",
+        ]
+        | None
+    ) = None
+    software: Literal["obs", "streamlabs"] | None = None
+    social_platforms: list[Literal["youtube", "tiktok", "instagram"]] | None = None
+    ingest_ready: bool | None = None
+    premium_choice: Literal["free", "premium"] | None = None
+    live_detected: bool | None = None
+    complete: bool = False
+
+
 class MeResponse(ApiModel):
     user: UserOut
     organization: OrganizationOut
     capabilities: Capabilities
+    onboarding: OnboardingOut
+
+
+class ClipOut(ApiModel):
+    id: uuid.UUID
+    title: str
+    description: str
+    status: str
+    category: str
+    score: float
+    start_ms: int
+    end_ms: int
+    duration_ms: int | None
+    is_favorite: bool
+    thumbnail_available: bool
+    download_available: bool
+    created_at: datetime
+    stream_session_id: uuid.UUID | None
+
+
+class ClipList(ApiModel):
+    items: list[ClipOut]
+
+
+class SocialAccountOut(ApiModel):
+    id: uuid.UUID
+    platform: str
+    status: str
+    display_name: str
+    connected_at: datetime
+
+
+class SocialAccountList(ApiModel):
+    items: list[SocialAccountOut]
+    oauth_available: bool
+    platforms: list[str]
 
 
 class UpdateProfileRequest(ApiModel):

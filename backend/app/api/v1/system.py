@@ -33,6 +33,7 @@ def capabilities(ctx: AppContext) -> Capabilities:
         live_processing=release.LIVE_PROCESSING_AVAILABLE,
         ingest_keys=release.INGEST_KEYS_AVAILABLE,
         ingest_online=ctx.settings.ingest_online,
+        social_oauth=release.SOCIAL_OAUTH_AVAILABLE,
     )
 
 

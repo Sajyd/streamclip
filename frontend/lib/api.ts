@@ -22,7 +22,7 @@ export type ApiError = {
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   token?: string;
   /** Forward the visitor's address and user agent (reads the incoming request). */

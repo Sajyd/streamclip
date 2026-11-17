@@ -87,6 +87,7 @@ async def test_meta_describes_real_capabilities(client: httpx.AsyncClient) -> No
         "live_processing": False,
         "ingest_keys": True,
         "ingest_online": False,
+        "social_oauth": False,
     }
 
 

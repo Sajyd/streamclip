@@ -9,11 +9,14 @@ import { readSession } from "@/lib/session";
 import type {
   AuthSession,
   BillingOverview,
+  Clip,
   DataExport,
   Me,
   Meta,
   NotificationList,
+  Onboarding,
   PlanCatalog,
+  SocialAccountList,
   StreamKey,
   StreamSession,
 } from "@/types/api";
@@ -115,6 +118,18 @@ export async function getIngestKey(token: string, next: string): Promise<StreamK
 
 export async function getIngestSessions(token: string, next: string): Promise<StreamSession[]> {
   return unwrap(await api<{ items: StreamSession[] }>("/ingest/sessions", { token }), next).items;
+}
+
+export async function getOnboarding(token: string, next: string): Promise<Onboarding> {
+  return unwrap(await api<Onboarding>("/onboarding", { token }), next);
+}
+
+export async function getClips(token: string, next: string): Promise<Clip[]> {
+  return unwrap(await api<{ items: Clip[] }>("/clips", { token }), next).items;
+}
+
+export async function getSocialAccounts(token: string, next: string): Promise<SocialAccountList> {
+  return unwrap(await api<SocialAccountList>("/social/accounts", { token }), next);
 }
 
 export type PublicInfo = { catalog: PlanCatalog; meta: Meta };

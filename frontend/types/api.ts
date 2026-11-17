@@ -10,6 +10,51 @@ export type Capabilities = {
   live_processing: boolean;
   ingest_keys: boolean;
   ingest_online: boolean;
+  social_oauth: boolean;
+};
+
+export type Onboarding = {
+  completed: boolean;
+  step: string;
+  referral_source: string | null;
+  usage: string | null;
+  software: "obs" | "streamlabs" | null;
+  social_platforms: Array<"youtube" | "tiktok" | "instagram">;
+  ingest_ready: boolean;
+  premium_choice: "free" | "premium" | null;
+  live_detected: boolean;
+  completed_at: string | null;
+};
+
+export type Clip = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  category: string;
+  score: number;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number | null;
+  is_favorite: boolean;
+  thumbnail_available: boolean;
+  download_available: boolean;
+  created_at: string;
+  stream_session_id: string | null;
+};
+
+export type SocialAccount = {
+  id: string;
+  platform: string;
+  status: string;
+  display_name: string;
+  connected_at: string;
+};
+
+export type SocialAccountList = {
+  items: SocialAccount[];
+  oauth_available: boolean;
+  platforms: string[];
 };
 
 export type Meta = {
@@ -44,7 +89,12 @@ export type AuthResponse = { user: User; tokens: Tokens };
 
 export type Organization = { id: string; name: string; role: "owner" | "admin" | "member" };
 
-export type Me = { user: User; organization: Organization; capabilities: Capabilities };
+export type Me = {
+  user: User;
+  organization: Organization;
+  capabilities: Capabilities;
+  onboarding: Onboarding;
+};
 
 export type Plan = {
   code: string;

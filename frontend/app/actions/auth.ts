@@ -66,7 +66,7 @@ export async function registerAction(_previous: FormState, formData: FormData): 
     return failure(result.error, values);
   }
   writeSession(await cookies(), result.data.tokens);
-  redirect("/dashboard");
+  redirect("/onboarding");
 }
 
 export async function logoutAction(): Promise<void> {
