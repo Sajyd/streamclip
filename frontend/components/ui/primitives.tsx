@@ -3,15 +3,15 @@ import { useId, type ComponentProps, type ReactNode } from "react";
 import { cx } from "@/lib/format";
 
 export function Card({ className, ...props }: ComponentProps<"section">) {
-  return <section className={cx("surface p-6", className)} {...props} />;
+  return <section className={cx("surface p-6 sm:p-7", className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: ComponentProps<"h2">) {
-  return <h2 className={cx("text-base font-semibold text-white", className)} {...props} />;
+  return <h2 className={cx("text-base font-semibold tracking-tight text-white", className)} {...props} />;
 }
 
 export function CardDescription({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cx("mt-1 text-sm text-ink-300", className)} {...props} />;
+  return <p className={cx("mt-1 text-sm leading-relaxed text-ink-300", className)} {...props} />;
 }
 
 type Tone = "neutral" | "brand" | "ok" | "warn" | "danger";
@@ -51,10 +51,10 @@ export function Notice({ tone = "neutral", title, children, className }: NoticeP
   return (
     <div
       role={tone === "danger" ? "alert" : "status"}
-      className={cx("rounded-xl border px-4 py-3 text-sm", NOTICE_TONES[tone], className)}
+      className={cx("rounded-2xl border px-4 py-3.5 text-sm", NOTICE_TONES[tone], className)}
     >
-      {title ? <p className="font-semibold">{title}</p> : null}
-      <div className={cx(title ? "mt-1" : null, "text-ink-200")}>{children}</div>
+      {title ? <p className="font-semibold tracking-tight">{title}</p> : null}
+      <div className={cx(title ? "mt-1" : null, "leading-relaxed text-ink-200")}>{children}</div>
     </div>
   );
 }

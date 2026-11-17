@@ -23,21 +23,22 @@ export function subscriptionStatus(overview: BillingOverview) {
 export function PlanSummary({ overview, timeZone }: { overview: BillingOverview; timeZone: string }) {
   const status = subscriptionStatus(overview);
   return (
-    <Card>
+    <Card className="h-full">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <CardTitle>Offre {overview.plan.name}</CardTitle>
+          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Offre</p>
+          <CardTitle className="mt-2 text-lg">{overview.plan.name}</CardTitle>
           <CardDescription>{overview.plan.description}</CardDescription>
         </div>
         <Badge tone={status.tone}>{status.label}</Badge>
       </div>
-      <p className="mt-5 text-3xl font-semibold tracking-tight text-white">
+      <p className="mt-6 text-3xl font-semibold tracking-tight text-white">
         {formatPrice(overview.plan.price_cents, overview.plan.currency)}
         <span className="ml-1.5 text-sm font-normal text-ink-400">
           {overview.is_paid ? "TTC / mois" : "sans engagement"}
         </span>
       </p>
-      <p className="mt-3 text-sm text-ink-300">
+      <p className="mt-3 text-sm leading-relaxed text-ink-300">
         {overview.is_paid
           ? overview.cancel_at_period_end
             ? `Résiliation programmée : votre offre reste active jusqu'au ${formatDate(overview.current_period_end, timeZone)}.`
@@ -53,10 +54,11 @@ export function QuotaSummary({ overview, timeZone }: { overview: BillingOverview
   const percent = Math.min(100, Math.round(quota.used_ratio * 100));
   const tone = quota.exhausted ? "bg-danger-500" : quota.warning ? "bg-warn-400" : "bg-brand-500";
   return (
-    <Card>
+    <Card className="h-full">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <CardTitle>Consommation du mois</CardTitle>
+          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Consommation</p>
+          <CardTitle className="mt-2 text-lg">Ce mois-ci</CardTitle>
           <CardDescription>
             Période en cours jusqu&apos;au {formatDate(overview.current_period_end, timeZone)}.
           </CardDescription>
@@ -67,7 +69,7 @@ export function QuotaSummary({ overview, timeZone }: { overview: BillingOverview
           <Badge tone="warn">Bientôt atteint</Badge>
         ) : null}
       </div>
-      <p className="mt-5 text-3xl font-semibold tracking-tight text-white">
+      <p className="mt-6 text-3xl font-semibold tracking-tight text-white">
         {formatDuration(quota.consumed_seconds)}
         <span className="ml-1.5 text-sm font-normal text-ink-400">
           sur {formatHours(quota.included_seconds)}
@@ -79,11 +81,14 @@ export function QuotaSummary({ overview, timeZone }: { overview: BillingOverview
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
-        className="mt-4 h-2.5 overflow-hidden rounded-full bg-ink-700"
+        className="mt-5 h-2 overflow-hidden rounded-full bg-ink-800"
       >
-        <div className={cx("h-full rounded-full transition-all", tone)} style={{ width: `${percent}%` }} />
+        <div
+          className={cx("h-full rounded-full transition-all duration-500", tone)}
+          style={{ width: `${percent}%` }}
+        />
       </div>
-      <p className="mt-3 text-sm text-ink-300">
+      <p className="mt-3 text-sm leading-relaxed text-ink-300">
         {quota.exhausted
           ? "Le traitement est suspendu jusqu'à la prochaine période. Une offre supérieure le rétablit immédiatement."
           : `Il vous reste ${formatDuration(quota.remaining_seconds)} de traitement.`}

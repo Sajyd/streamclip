@@ -4,12 +4,15 @@ import { Suspense } from "react";
 import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
 import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
+import { ClipsLibrary } from "@/components/app/clips-library";
 import { IngestPanel } from "@/components/app/ingest-panel";
+import { LiveDetector } from "@/components/app/live-detector";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
 import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
 import {
   getBillingOverview,
+  getClips,
   getIngestKey,
   getIngestSessions,
   getNotifications,
@@ -33,22 +36,40 @@ async function Dashboard() {
   const { token, me } = await requireSession(PATH);
   const { user, organization, capabilities } = me;
   const canManage = organization.role === "owner" || organization.role === "admin";
-  const [overview, notifications, ingestKey, ingestSessions] = await Promise.all([
+  const [overview, notifications, ingestKey, ingestSessions, clips] = await Promise.all([
     getBillingOverview(token, PATH),
     getNotifications(token, PATH),
     capabilities.ingest_keys ? getIngestKey(token, PATH) : Promise.resolve(null),
     capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
+    getClips(token, PATH),
   ]);
   const timeZone = user.timezone;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">
-          Bonjour{user.display_name ? ` ${user.display_name}` : ""}
-        </h1>
-        <p className="mt-1 text-sm text-ink-300">Votre offre, votre consommation et vos notifications.</p>
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">
+            Tableau de bord
+          </p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
+            Bonjour{user.display_name ? ` ${user.display_name}` : ""}
+          </h1>
+          <p className="mt-1.5 text-sm text-ink-300">
+            Branchez OBS, lancez le live — STREAMCLIP détecte et prépare vos clips.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <ButtonLink href="/clips" variant="secondary" size="sm">
+            Voir les clips
+          </ButtonLink>
+          <ButtonLink href="/billing" variant="secondary" size="sm">
+            {overview.is_paid ? "Gérer mon abonnement" : "Voir les offres"}
+          </ButtonLink>
+        </div>
       </div>
+
+      {capabilities.ingest_keys ? <LiveDetector sessions={ingestSessions} /> : null}
 
       {overview.payment_failed ? (
         <Notice tone="danger" title="Le dernier paiement a échoué">
@@ -71,15 +92,12 @@ async function Dashboard() {
         </Notice>
       ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2">
         <QuotaSummary overview={overview} timeZone={timeZone} />
-        <div className="flex flex-col gap-4">
-          <PlanSummary overview={overview} timeZone={timeZone} />
-          <ButtonLink href="/billing" variant="secondary" className="self-start">
-            {overview.is_paid ? "Gérer mon abonnement" : "Voir les offres"}
-          </ButtonLink>
-        </div>
+        <PlanSummary overview={overview} timeZone={timeZone} />
       </div>
+
+      <ClipsLibrary clips={clips} timeZone={timeZone} />
 
       {capabilities.ingest_keys ? (
         <IngestPanel
@@ -92,8 +110,9 @@ async function Dashboard() {
         />
       ) : (
         <Card>
-          <CardTitle>Lives et clips</CardTitle>
-          <CardDescription>
+          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Production</p>
+          <CardTitle className="mt-2">Lives et clips</CardTitle>
+          <CardDescription className="mt-2 max-w-2xl leading-relaxed">
             La connexion de votre logiciel de diffusion et la génération de clips ne sont pas encore
             ouvertes sur la plateforme. Votre compte et votre offre sont prêts : cet espace affichera
             vos lives et vos clips dès l&apos;ouverture du traitement.
@@ -104,7 +123,8 @@ async function Dashboard() {
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <CardTitle>Notifications</CardTitle>
+            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Activité</p>
+            <CardTitle className="mt-2">Notifications</CardTitle>
             <CardDescription>
               {notifications.unread_count > 0
                 ? `${notifications.unread_count} non lue${notifications.unread_count > 1 ? "s" : ""}`
@@ -120,11 +140,11 @@ async function Dashboard() {
           ) : null}
         </div>
         {notifications.items.length === 0 ? (
-          <p className="mt-5 text-sm text-ink-400">Aucune notification pour le moment.</p>
+          <p className="mt-6 text-sm text-ink-400">Aucune notification pour le moment.</p>
         ) : (
-          <ul className="mt-5 divide-y divide-ink-700">
+          <ul className="mt-6 divide-y divide-white/5">
             {notifications.items.map((notification) => (
-              <li key={notification.id} className="flex gap-3 py-3.5">
+              <li key={notification.id} className="flex gap-3 py-4 first:pt-2">
                 <span
                   aria-hidden
                   className={cx(
@@ -133,11 +153,16 @@ async function Dashboard() {
                   )}
                 />
                 <div className="min-w-0">
-                  <p className={cx("text-sm", notification.read_at ? "text-ink-200" : "font-medium text-white")}>
+                  <p
+                    className={cx(
+                      "text-sm",
+                      notification.read_at ? "text-ink-200" : "font-medium text-white",
+                    )}
+                  >
                     {notification.title}
                   </p>
-                  <p className="mt-0.5 text-sm text-ink-300">{notification.body}</p>
-                  <p className="mt-1 text-xs text-ink-500">
+                  <p className="mt-0.5 text-sm leading-relaxed text-ink-300">{notification.body}</p>
+                  <p className="mt-1.5 text-xs text-ink-500">
                     {formatDateTime(notification.created_at, timeZone)}
                   </p>
                 </div>
@@ -152,13 +177,13 @@ async function Dashboard() {
 
 function DashboardSkeleton() {
   return (
-    <div className="space-y-6" aria-busy aria-label="Chargement du tableau de bord">
-      <Skeleton className="h-10 w-64" />
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Skeleton className="h-56" />
-        <Skeleton className="h-56" />
+    <div className="space-y-8" aria-busy aria-label="Chargement du tableau de bord">
+      <Skeleton className="h-14 w-72" />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Skeleton className="h-52 rounded-3xl" />
+        <Skeleton className="h-52 rounded-3xl" />
       </div>
-      <Skeleton className="h-48" />
+      <Skeleton className="h-48 rounded-3xl" />
     </div>
   );
 }

@@ -7,9 +7,11 @@ export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg";
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary: "bg-brand-500 text-white hover:bg-brand-400 active:bg-brand-600 shadow-lg shadow-brand-500/20",
-  secondary: "border border-ink-600 bg-ink-800 text-ink-100 hover:border-ink-500 hover:bg-ink-700",
-  ghost: "text-ink-200 hover:bg-ink-800 hover:text-white",
+  primary:
+    "bg-brand-500 text-white shadow-lg shadow-brand-500/25 hover:bg-brand-400 active:bg-brand-600",
+  secondary:
+    "border border-white/10 bg-white/5 text-ink-100 hover:border-white/15 hover:bg-white/10",
+  ghost: "text-ink-200 hover:bg-white/5 hover:text-white",
   danger: "border border-danger-500/50 bg-danger-500/10 text-danger-400 hover:bg-danger-500/20",
 };
 
@@ -29,7 +31,7 @@ export function buttonClasses({
   className?: string;
 } = {}): string {
   return cx(
-    "inline-flex items-center justify-center gap-2 rounded-lg font-medium whitespace-nowrap",
+    "inline-flex items-center justify-center gap-2 rounded-xl font-medium whitespace-nowrap",
     "transition-colors disabled:cursor-not-allowed disabled:opacity-60",
     VARIANTS[variant],
     SIZES[size],

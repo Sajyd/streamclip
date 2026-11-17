@@ -34,18 +34,18 @@ export function PlanCard({ plan, highlighted = false, current = false, action }:
   return (
     <article
       className={cx(
-        "relative flex flex-col rounded-2xl border p-6",
+        "relative flex flex-col rounded-3xl border p-6 transition-colors",
         highlighted
-          ? "border-brand-500/60 bg-gradient-to-b from-brand-500/10 to-ink-850"
-          : "border-ink-700 bg-ink-850",
+          ? "border-brand-400/50 bg-gradient-to-b from-brand-500/15 via-ink-900/80 to-ink-950 shadow-xl shadow-brand-500/10"
+          : "border-white/10 bg-ink-950/50 hover:border-white/15 hover:bg-ink-900/60",
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-lg font-semibold text-white">{plan.name}</h3>
+        <h3 className="text-lg font-semibold tracking-tight text-white">{plan.name}</h3>
         {current ? <Badge tone="ok">Offre actuelle</Badge> : null}
         {!current && highlighted ? <Badge tone="brand">Le plus choisi</Badge> : null}
       </div>
-      <p className="mt-2 min-h-10 text-sm text-ink-300">{plan.description}</p>
+      <p className="mt-2 min-h-10 text-sm leading-relaxed text-ink-300">{plan.description}</p>
       <p className="mt-5 flex items-baseline gap-1.5">
         <span className="text-4xl font-semibold tracking-tight text-white">
           {formatPrice(plan.price_cents, plan.currency)}
@@ -73,5 +73,5 @@ export function PlanCard({ plan, highlighted = false, current = false, action }:
 }
 
 export function PlanGrid({ children }: { children: ReactNode }) {
-  return <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-5">{children}</div>;
+  return <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">{children}</div>;
 }

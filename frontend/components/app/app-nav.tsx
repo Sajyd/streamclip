@@ -7,6 +7,7 @@ import { cx } from "@/lib/format";
 
 const LINKS = [
   { href: "/dashboard", label: "Tableau de bord" },
+  { href: "/clips", label: "Clips" },
   { href: "/billing", label: "Abonnement" },
   { href: "/settings", label: "Paramètres" },
 ];
@@ -23,8 +24,10 @@ export function AppNav() {
             href={link.href}
             aria-current={active ? "page" : undefined}
             className={cx(
-              "rounded-lg px-3 py-1.5 text-sm whitespace-nowrap transition-colors",
-              active ? "bg-ink-800 text-white" : "text-ink-300 hover:bg-ink-850 hover:text-white",
+              "rounded-xl px-3.5 py-1.5 text-sm whitespace-nowrap transition-colors",
+              active
+                ? "bg-white/10 text-white"
+                : "text-ink-300 hover:bg-white/5 hover:text-white",
             )}
           >
             {link.label}

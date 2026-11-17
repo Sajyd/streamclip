@@ -85,12 +85,20 @@ const QUESTIONS = [
   },
 ];
 
-function SectionHeading({ eyebrow, title, intro }: { eyebrow: string; title: string; intro?: string }) {
+function SectionHeading({
+  eyebrow,
+  title,
+  intro,
+}: {
+  eyebrow: string;
+  title: string;
+  intro?: string;
+}) {
   return (
     <div className="mx-auto max-w-2xl text-center">
-      <p className="text-sm font-semibold uppercase tracking-widest text-brand-300">{eyebrow}</p>
+      <p className="text-xs font-medium tracking-[0.2em] text-brand-300 uppercase">{eyebrow}</p>
       <h2 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">{title}</h2>
-      {intro ? <p className="mt-4 text-ink-300">{intro}</p> : null}
+      {intro ? <p className="mt-4 text-base leading-relaxed text-ink-300">{intro}</p> : null}
     </div>
   );
 }
@@ -111,7 +119,7 @@ async function AccountDeletedNotice({ searchParams }: { searchParams: PageProps<
 
 export default function HomePage({ searchParams }: PageProps<"/">) {
   return (
-    <>
+    <div className="page-glow flex min-h-full flex-1 flex-col">
       <SiteHeader />
       <main id="contenu" className="flex-1">
         <Suspense fallback={null}>
@@ -121,69 +129,76 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
           <AvailabilityNotice />
         </Suspense>
 
-        <section className="mx-auto grid w-full max-w-6xl items-center gap-14 px-4 py-16 sm:px-6 lg:grid-cols-2 lg:py-24">
-          <div>
-            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
-              Vos lives deviennent des <span className="text-gradient">clips verticaux</span> prêts à
-              publier
-            </h1>
-            <p className="mt-6 max-w-xl text-lg text-ink-300">
-              STREAMCLIP AI suit votre live, repère les moments forts et prépare des clips 9:16
-              sous-titrés pour YouTube Shorts, TikTok et Instagram.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <ButtonLink href="/register" size="lg">
-                Créer mon compte gratuit
-              </ButtonLink>
-              <ButtonLink href="/#tarifs" size="lg" variant="secondary">
-                Voir les offres
-              </ButtonLink>
+        <section className="relative overflow-hidden">
+          <div className="mx-auto grid w-full max-w-6xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16 lg:py-24">
+            <div className="animate-fade-up">
+              <p className="text-sm font-medium tracking-[0.18em] text-brand-300 uppercase">
+                STREAMCLIP AI
+              </p>
+              <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-[3.4rem] lg:leading-[1.08]">
+                Vos lives deviennent des{" "}
+                <span className="text-gradient">clips verticaux</span> prêts à publier
+              </h1>
+              <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
+                STREAMCLIP AI suit votre live, repère les moments forts et prépare des clips 9:16
+                sous-titrés pour YouTube Shorts, TikTok et Instagram.
+              </p>
+              <div className="mt-9 flex flex-wrap gap-3">
+                <ButtonLink href="/register" size="lg">
+                  Créer mon compte gratuit
+                </ButtonLink>
+                <ButtonLink href="/#tarifs" size="lg" variant="secondary">
+                  Voir les offres
+                </ButtonLink>
+              </div>
+              <p className="mt-5 text-sm text-ink-400">
+                1 heure de live offerte chaque mois, sans carte bancaire.
+              </p>
             </div>
-            <p className="mt-4 text-sm text-ink-400">1 heure de live offerte chaque mois, sans carte bancaire.</p>
+            <ClipIllustration />
           </div>
-          <ClipIllustration />
         </section>
 
-        <section id="fonctionnement" className="scroll-mt-20 border-t border-ink-800 py-20">
+        <section id="fonctionnement" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-6xl px-4 sm:px-6">
             <SectionHeading
               eyebrow="Fonctionnement"
               title="Du direct au clip, sans montage"
               intro="Quatre étapes, dont une seule vous demande une action."
             />
-            <ol className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <ol className="mt-14 grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
               {STEPS.map((step, index) => (
-                <li key={step.title} className="surface p-6">
-                  <span className="flex size-9 items-center justify-center rounded-full bg-brand-500/15 text-sm font-semibold text-brand-200">
-                    {index + 1}
+                <li key={step.title} className="relative">
+                  <span className="font-mono text-sm font-medium text-brand-300">
+                    {String(index + 1).padStart(2, "0")}
                   </span>
-                  <h3 className="mt-4 font-semibold text-white">{step.title}</h3>
-                  <p className="mt-2 text-sm text-ink-300">{step.body}</p>
+                  <h3 className="mt-3 text-base font-semibold text-white">{step.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-ink-300">{step.body}</p>
                 </li>
               ))}
             </ol>
           </div>
         </section>
 
-        <section id="fonctionnalites" className="scroll-mt-20 border-t border-ink-800 py-20">
+        <section id="fonctionnalites" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-6xl px-4 sm:px-6">
             <SectionHeading
               eyebrow="Fonctionnalités"
               title="Pensé pour les créateurs qui diffusent en direct"
               intro="Gaming, podcasts, interviews, discussions, lives IRL, événements ou musique."
             />
-            <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-14 grid gap-px overflow-hidden rounded-3xl border border-white/10 bg-white/5 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((feature) => (
-                <article key={feature.title} className="surface p-6">
+                <article key={feature.title} className="bg-ink-950/80 p-6 sm:p-7">
                   <h3 className="font-semibold text-white">{feature.title}</h3>
-                  <p className="mt-2 text-sm text-ink-300">{feature.body}</p>
+                  <p className="mt-2 text-sm leading-relaxed text-ink-300">{feature.body}</p>
                 </article>
               ))}
             </div>
           </div>
         </section>
 
-        <section id="tarifs" className="scroll-mt-20 border-t border-ink-800 py-20">
+        <section id="tarifs" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
             <SectionHeading
               eyebrow="Tarifs"
@@ -198,29 +213,32 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
           </div>
         </section>
 
-        <section id="faq" className="scroll-mt-20 border-t border-ink-800 py-20">
+        <section id="faq" className="scroll-mt-20 border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
             <SectionHeading eyebrow="FAQ" title="Questions fréquentes" />
-            <div className="mt-10 space-y-3">
+            <div className="mt-10 divide-y divide-white/10 overflow-hidden rounded-3xl border border-white/10">
               {QUESTIONS.map((item) => (
-                <details key={item.question} className="surface group px-5 py-4">
+                <details key={item.question} className="group bg-ink-950/50 px-5 py-4 open:bg-ink-900/60">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-4 font-medium text-white">
                     {item.question}
-                    <span aria-hidden className="text-brand-300 transition-transform group-open:rotate-45">
+                    <span
+                      aria-hidden
+                      className="flex size-7 shrink-0 items-center justify-center rounded-full border border-white/10 text-brand-300 transition-transform group-open:rotate-45"
+                    >
                       +
                     </span>
                   </summary>
-                  <p className="mt-3 text-sm text-ink-300">{item.answer}</p>
+                  <p className="mt-3 max-w-prose text-sm leading-relaxed text-ink-300">{item.answer}</p>
                 </details>
               ))}
             </div>
           </div>
         </section>
 
-        <section className="border-t border-ink-800 py-20">
+        <section className="border-t border-white/5 py-20 sm:py-24">
           <div className="mx-auto w-full max-w-3xl px-4 text-center sm:px-6">
-            <h2 className="text-3xl font-semibold tracking-tight text-white">
-              Prêt à essayer sur votre prochain live ?
+            <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              Prêt à essayer sur votre prochain live&nbsp;?
             </h2>
             <p className="mt-4 text-ink-300">Créez votre compte en une minute. Sans carte bancaire.</p>
             <ButtonLink href="/register" size="lg" className="mt-8">
@@ -230,6 +248,6 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
         </section>
       </main>
       <SiteFooter />
-    </>
+    </div>
   );
 }

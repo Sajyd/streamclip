@@ -72,6 +72,39 @@
   }
 }
 
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes live-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 @utility text-gradient {
   background-image: linear-gradient(100deg, var(--color-brand-300), var(--color-flare-400));
   background-clip: text;
@@ -79,7 +112,33 @@
 }
 
 @utility surface {
-  background-color: var(--color-ink-850);
-  border: 1px solid var(--color-ink-700);
-  border-radius: 1rem;
+  background-color: color-mix(in oklab, var(--color-ink-850) 88%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-ink-600) 55%, transparent);
+  border-radius: 1.25rem;
+  backdrop-filter: blur(8px);
+}
+
+@utility surface-quiet {
+  background-color: color-mix(in oklab, var(--color-ink-900) 70%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-ink-700) 70%, transparent);
+  border-radius: 1.25rem;
+}
+
+@utility page-glow {
+  background-image:
+    radial-gradient(ellipse 70% 45% at 50% -10%, color-mix(in oklab, var(--color-brand-500) 22%, transparent), transparent 70%),
+    radial-gradient(ellipse 40% 30% at 90% 20%, color-mix(in oklab, var(--color-flare-500) 12%, transparent), transparent 65%),
+    radial-gradient(ellipse 35% 25% at 10% 40%, color-mix(in oklab, var(--color-brand-700) 18%, transparent), transparent 60%);
+}
+
+@utility animate-fade-up {
+  animation: fade-up 0.7s ease-out both;
+}
+
+@utility animate-soft-pulse {
+  animation: soft-pulse 6s ease-in-out infinite;
+}
+
+@utility animate-live-dot {
+  animation: live-dot 1.6s ease-in-out infinite;
 }

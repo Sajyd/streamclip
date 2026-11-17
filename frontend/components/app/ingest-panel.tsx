@@ -136,7 +136,8 @@ export function IngestPanel({
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle>Connexion OBS</CardTitle>
+            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Ingestion</p>
+            <CardTitle className="mt-2">Connexion OBS</CardTitle>
             <CardDescription>
               Ajoutez STREAMCLIP AI comme destination supplémentaire. Vos clés Twitch, YouTube ou
               Kick ne sont jamais demandées.
@@ -162,7 +163,7 @@ export function IngestPanel({
         ) : null}
 
         {existingKey ? (
-          <div className="mt-5 space-y-3 rounded-xl border border-ink-800 bg-ink-950/60 p-4">
+          <div className="mt-5 space-y-3 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="font-medium text-white">Clé active</span>
               <Badge>…{existingKey.key_hint}</Badge>
@@ -217,16 +218,17 @@ export function IngestPanel({
       </Card>
 
       <Card>
-        <CardTitle>Lives récents</CardTitle>
+        <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Historique</p>
+        <CardTitle className="mt-2">Lives récents</CardTitle>
         <CardDescription>Sessions d&apos;ingestion enregistrées pour cet espace.</CardDescription>
         {sessions.length === 0 ? (
-          <p className="mt-4 text-sm text-ink-400">Aucun live pour le moment.</p>
+          <p className="mt-5 text-sm text-ink-400">Aucun live pour le moment.</p>
         ) : (
-          <ul className="mt-4 divide-y divide-ink-800">
+          <ul className="mt-5 divide-y divide-white/5">
             {sessions.map((session) => (
               <li
                 key={session.id}
-                className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"
+                className="flex flex-wrap items-center justify-between gap-2 py-3.5 text-sm"
               >
                 <div>
                   <p className="font-medium text-white capitalize">{session.status}</p>
