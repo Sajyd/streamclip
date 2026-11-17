@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import threading
 import time
 import urllib.error
@@ -37,8 +38,8 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,198}$")
 _SAFE_HLS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,240}$")
 
 _lock = threading.Lock()
-# Paths currently live — HD buffering is MediaMTX native record (not ffmpeg).
-_active_paths: set[str] = set()
+# Supervised 5-min RTMP segment loops (exact wall-clock cadence).
+_loops: dict[str, subprocess.Popen] = {}
 _started_at = time.time()
 _rate: dict[str, deque[float]] = defaultdict(deque)
 _net_prev: tuple[float, int, int] | None = None  # ts, rx, tx
@@ -180,37 +181,40 @@ def _read_net() -> dict:
 
 
 def _buffer_stats() -> dict:
+    active = 0
     sequences: list[dict] = []
     pending_bytes = 0
     with _lock:
-        paths = sorted(_active_paths)
-    for path in paths:
-        safe = path.replace("/", "_").replace(":", "_")
-        seq = 0
-        seqfile = STATE_DIR / f"seg_{safe}.seq"
-        if seqfile.exists():
-            try:
-                seq = int(seqfile.read_text().strip() or "0")
-            except ValueError:
-                seq = 0
-        sequences.append(
-            {
-                "path": _public_path_label(path),
-                "running": True,
-                "next_sequence": seq,
-                "buffer_window_s": 300,
-                "recorder": "mediamtx",
-            }
-        )
+        for path, proc in list(_loops.items()):
+            running = proc.poll() is None
+            if running:
+                active += 1
+            safe = path.replace("/", "_").replace(":", "_")
+            seq = 0
+            seqfile = STATE_DIR / f"seg_{safe}.seq"
+            if seqfile.exists():
+                try:
+                    seq = int(seqfile.read_text().strip() or "0")
+                except ValueError:
+                    seq = 0
+            sequences.append(
+                {
+                    "path": _public_path_label(path),
+                    "running": running,
+                    "next_sequence": seq,
+                    "buffer_window_s": 300,
+                    "recorder": "ffmpeg-rtmp",
+                }
+            )
     try:
         if SEGMENTS_DIR.is_dir():
-            for f in SEGMENTS_DIR.rglob("*"):
-                if f.is_file() and f.suffix in {".mp4", ".fmp4"}:
+            for f in SEGMENTS_DIR.iterdir():
+                if f.is_file() and f.suffix == ".mp4":
                     pending_bytes += f.stat().st_size
     except OSError:
         pass
     return {
-        "active_buffers": len(paths),
+        "active_buffers": active,
         "window_s": 300,
         "pending_segment_bytes": pending_bytes,
         "pending_segment_mb": round(pending_bytes / (1024 * 1024), 2),
@@ -218,21 +222,16 @@ def _buffer_stats() -> dict:
     }
 
 
-def _kill_legacy_segment_loops() -> int:
-    """Stop any leftover ffmpeg RTSP segment-loop processes from older agents."""
-    killed = 0
-    try:
-        for pidfile in STATE_DIR.glob("seg_*.pid"):
-            try:
-                pid = int(pidfile.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
-                killed += 1
-            except (OSError, ValueError):
-                pass
-            pidfile.unlink(missing_ok=True)
-    except OSError:
-        pass
-    return killed
+def _spawn_loop(clean: str) -> subprocess.Popen:
+    env = os.environ.copy()
+    log_fh = open("/var/log/streamclip-segment.log", "a")  # noqa: SIM115 — kept for child lifetime
+    return subprocess.Popen(
+        ["/usr/local/bin/streamclip-segment-loop", clean],
+        env=env,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
 
 
 def start_path(path: str) -> dict:
@@ -240,23 +239,41 @@ def start_path(path: str) -> dict:
     if clean is None:
         return {"ok": False, "error": "invalid_path"}
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Kill legacy ffmpeg RTSP loops — they drop frames on 1080p60.
-    _kill_legacy_segment_loops()
     with _lock:
-        already = clean in _active_paths
-        _active_paths.add(clean)
-    _log(f"start path={_public_path_label(clean)} recorder=mediamtx")
-    return {
-        "ok": True,
-        "path": _public_path_label(clean),
-        "status": "already_running" if already else "started",
-        "recorder": "mediamtx",
-    }
+        proc = _loops.get(clean)
+        if proc is not None and proc.poll() is None:
+            return {
+                "ok": True,
+                "path": _public_path_label(clean),
+                "status": "already_running",
+                "recorder": "ffmpeg-rtmp",
+            }
+        proc = _spawn_loop(clean)
+        _loops[clean] = proc
+        _log(f"start path={_public_path_label(clean)} pid={proc.pid} recorder=ffmpeg-rtmp")
+        return {
+            "ok": True,
+            "path": _public_path_label(clean),
+            "status": "started",
+            "recorder": "ffmpeg-rtmp",
+        }
 
 
 def _respawn_dead_loops() -> int:
-    """No-op: HD segments come from MediaMTX record, not a supervised ffmpeg loop."""
-    return 0
+    """If a segment loop exited, restart it — never tear down the live."""
+    restarted = 0
+    with _lock:
+        for path, proc in list(_loops.items()):
+            if proc.poll() is None:
+                continue
+            fresh = _spawn_loop(path)
+            _loops[path] = fresh
+            restarted += 1
+            _log(
+                f"respawn path={_public_path_label(path)} "
+                f"old_exit={proc.returncode} new_pid={fresh.pid}"
+            )
+    return restarted
 
 
 def stop_path(path: str) -> dict:
@@ -264,16 +281,36 @@ def stop_path(path: str) -> dict:
     if clean is None:
         return {"ok": False, "error": "invalid_path"}
     with _lock:
-        _active_paths.discard(clean)
-    killed = _kill_legacy_segment_loops()
-    _log(f"stop path={_public_path_label(clean)} killed_legacy={killed}")
+        proc = _loops.pop(clean, None)
+    safe = clean.replace("/", "_").replace(":", "_")
+    pidfile = STATE_DIR / f"seg_{safe}.pid"
+    killed = 0
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            killed += 1
+        except OSError:
+            try:
+                proc.terminate()
+                killed += 1
+            except OSError:
+                pass
+    if pidfile.exists():
+        try:
+            pid = int(pidfile.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+            pidfile.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+    _log(f"stop path={_public_path_label(clean)} killed={killed}")
     return {"ok": True, "path": _public_path_label(clean), "killed": killed}
 
 
 def health() -> dict:
     restarted = _respawn_dead_loops()
     with _lock:
-        active = len(_active_paths)
+        active = sum(1 for proc in _loops.values() if proc.poll() is None)
     return {
         "ok": True,
         "role": "dedicated-analysis",
@@ -282,7 +319,7 @@ def health() -> dict:
         "rtmp_port": 1935,
         "active_buffers": active,
         "respawned": restarted,
-        "recorder": "mediamtx",
+        "recorder": "ffmpeg-rtmp",
         "storage_configured": bool(os.environ.get("S3_BUCKET")),
         "ffmpeg": bool(shutil.which("ffmpeg") or Path("/usr/local/bin/ffmpeg").is_file()),
     }

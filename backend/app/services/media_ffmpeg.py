@@ -64,6 +64,39 @@ ANALYSIS_FRAME_EVERY_SEC = 60.0 / FRAMES_PER_MINUTE
 ANALYSIS_FRAME_HEIGHT = 360
 
 
+def _has_video_stream(video_path: Path) -> bool:
+    """True when ffprobe (or ffmpeg -i) reports at least one video stream."""
+    ffmpeg = require_ffmpeg()
+    ffprobe = shutil.which("ffprobe") or str(Path(ffmpeg).with_name("ffprobe"))
+    if Path(ffprobe).is_file():
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return "video" in (proc.stdout or "").lower()
+    # Fallback: parse ffmpeg -i stderr.
+    proc = subprocess.run(
+        [ffmpeg, "-i", str(video_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return "Video:" in (proc.stderr or "")
+
+
 def extract_frames_webp_low(
     video_path: Path,
     out_dir: Path,
@@ -71,26 +104,67 @@ def extract_frames_webp_low(
     every_seconds: float = ANALYSIS_FRAME_EVERY_SEC,
     height: int = ANALYSIS_FRAME_HEIGHT,
 ) -> list[Path]:
-    """Extract low-def WebP stills for Luna (HD segment stays untouched)."""
+    """Extract low-def WebP stills for Luna (HD segment stays untouched).
+
+    Returns [] (no raise) when the file has no video stream or is too short —
+    common for flap/partial uploads that must not park analysis.segment.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    pattern = out_dir / "frame_%04d.webp"
+    if not video_path.is_file() or video_path.stat().st_size < 10_000:
+        log.warning("extract_frames_skip_tiny", path=str(video_path))
+        return []
+    if not _has_video_stream(video_path):
+        log.warning("extract_frames_skip_no_video", path=str(video_path))
+        return []
+
     ffmpeg = require_ffmpeg()
+    pattern_webp = out_dir / "frame_%04d.webp"
     cmd = [
         ffmpeg,
         "-y",
         "-i",
         str(video_path),
+        "-map",
+        "0:v:0",
         "-vf",
         f"fps=1/{every_seconds},scale=-2:{height}",
+        "-frames:v",
+        "60",
         "-c:v",
         "libwebp",
         "-quality",
         "35",
         "-compression_level",
         "4",
-        str(pattern),
+        str(pattern_webp),
     ]
-    _run(cmd, label="extract_frames_webp")
+    try:
+        _run(cmd, label="extract_frames_webp")
+    except FFmpegError as exc:
+        # Static builds without libwebp → JPEG fallback at the same cadence.
+        log.warning("extract_frames_webp_failed", error=str(exc)[-400:])
+        pattern_jpg = out_dir / "frame_%04d.jpg"
+        cmd_jpg = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_path),
+            "-map",
+            "0:v:0",
+            "-vf",
+            f"fps=1/{every_seconds},scale=-2:{height}",
+            "-frames:v",
+            "60",
+            "-q:v",
+            "5",
+            str(pattern_jpg),
+        ]
+        try:
+            _run(cmd_jpg, label="extract_frames_jpeg_fallback")
+        except FFmpegError as exc2:
+            log.warning("extract_frames_all_failed", error=str(exc2)[-400:])
+            return []
+        return sorted(out_dir.glob("frame_*.jpg"))
     return sorted(out_dir.glob("frame_*.webp"))
 
 

@@ -191,7 +191,8 @@ class BedrockLuna:
             modelId=self.model_id,
             system=[{"text": SYSTEM_PROMPT}],
             messages=[{"role": "user", "content": content}],
-            inferenceConfig={"maxTokens": 4096, "temperature": 0.2},
+            # GPT-6 Luna on Bedrock rejects `temperature` (ValidationException).
+            inferenceConfig={"maxTokens": 4096},
         )
         parts = response.get("output", {}).get("message", {}).get("content", [])
         text = " ".join(p.get("text", "") for p in parts if "text" in p)

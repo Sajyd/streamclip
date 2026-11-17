@@ -37,6 +37,7 @@ from app.services import asr as asr_service
 from app.services.bedrock_luna import BedrockLuna, ViralMoment, moments_to_json
 from app.services.media_ffmpeg import (
     ANALYSIS_FRAME_EVERY_SEC,
+    FFmpegError,
     extract_audio_wav,
     extract_frames_webp_low,
     record_segment_copy,
@@ -249,6 +250,28 @@ async def analyze_uploaded_segment(
 ) -> SegmentResult:
     """Download a 5-min HD segment already on S3 and run FFmpeg + ASR + Luna."""
     body = await storage.get_object(storage_key)
+    # Tiny flap uploads (audio-only / <1s) must not park the analysis queue.
+    if len(body) < 1_000_000:
+        log.warning(
+            "segment_reject_tiny",
+            session_id=str(stream.id),
+            sequence=sequence,
+            size=len(body),
+            storage_key=storage_key,
+        )
+        return await persist_segment_analysis(
+            session,
+            stream=stream,
+            sequence=sequence,
+            storage_key=storage_key,
+            size_bytes=size_bytes or len(body),
+            moments=[],
+            transcript_text="",
+            transcript_words=[],
+            frames=0,
+            model=settings.bedrock_model or "us.openai.gpt-6-luna",
+            provider="skipped",
+        )
     with tempfile.TemporaryDirectory(prefix="streamclip-seg-") as tmp:
         video_path = Path(tmp) / "segment.mp4"
         await asyncio.to_thread(video_path.write_bytes, body)
@@ -287,14 +310,22 @@ async def analyze_local_segment(
             frames_dir,
             every_seconds=FRAME_EVERY_SEC,
         )
-        await asyncio.to_thread(extract_audio_wav, video_path, wav_path)
+        try:
+            await asyncio.to_thread(extract_audio_wav, video_path, wav_path)
+        except FFmpegError as exc:
+            log.warning("extract_audio_failed", error=str(exc)[-400:])
         audio_bytes = await asyncio.to_thread(_read_audio, wav_path)
 
-        provider = asr_service.build_asr(settings)
-        transcript = await provider.transcribe(audio_bytes, content_type="audio/wav")
-        words = [
-            {"text": w.text, "start_ms": w.start_ms, "end_ms": w.end_ms} for w in transcript.words
-        ]
+        words: list[dict[str, Any]] = []
+        transcript_text = ""
+        if audio_bytes:
+            provider = asr_service.build_asr(settings)
+            transcript = await provider.transcribe(audio_bytes, content_type="audio/wav")
+            transcript_text = transcript.text
+            words = [
+                {"text": w.text, "start_ms": w.start_ms, "end_ms": w.end_ms}
+                for w in transcript.words
+            ]
 
         model = settings.bedrock_model or "us.openai.gpt-6-luna"
         moments: list[ViralMoment] = []
@@ -302,7 +333,7 @@ async def analyze_local_segment(
             luna = BedrockLuna(settings)
             moments = await _run_luna(
                 luna,
-                transcript_text=transcript.text,
+                transcript_text=transcript_text,
                 transcript_words=words,
                 frame_paths=frames,
             )
@@ -336,7 +367,7 @@ async def analyze_local_segment(
             storage_key=storage_key,
             size_bytes=size_bytes,
             moments=moments,
-            transcript_text=transcript.text,
+            transcript_text=transcript_text,
             transcript_words=words,
             frames=len(frames),
             model=model,

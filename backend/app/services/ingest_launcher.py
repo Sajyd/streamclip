@@ -126,54 +126,90 @@ curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER
   | tar -xz -C /usr/local/bin mediamtx
 chmod +x /usr/local/bin/mediamtx
 
-echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
-chmod +x /usr/local/bin/streamclip-analysis-agent.py
-
-# MediaMTX records publisher packets natively (full HD / source fps).
-# On each completed 5-min fMP4: remux → progressive MP4 (copy) → S3 → API.
-cat > /usr/local/bin/streamclip-on-record-complete <<'ONSEG'
+# Exact 5-min HD windows from local RTMP (stream copy). Wall-clock paced:
+# a failed window still waits out the 5 minutes before the next attempt.
+cat > /usr/local/bin/streamclip-segment-loop <<'AGENT'
 #!/bin/bash
 set -uo pipefail
-PATH_NAME="${{1:-${{MTX_PATH:-}}}}"
-SEG_PATH="${{2:-${{MTX_SEGMENT_PATH:-}}}}"
+PATH_NAME="$1"
+SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+PIDFILE="/var/run/streamclip/seg_${{SAFE}}.pid"
+SEQFILE="/var/run/streamclip/seg_${{SAFE}}.seq"
+LOCKFILE="/var/run/streamclip/seg_${{SAFE}}.lock"
 LOG="/var/log/streamclip-segment.log"
-# shellcheck disable=SC1091
-[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
-if [ -z "$PATH_NAME" ] || [ -z "$SEG_PATH" ] || [ ! -s "$SEG_PATH" ]; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_skip path=$PATH_NAME seg=$SEG_PATH" >>"$LOG" || true
+WINDOW_S=300
+MIN_BYTES=1000000
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 0
 fi
-SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
-SEQFILE="/var/run/streamclip/seg_${{SAFE}}.seq"
-mkdir -p /var/run/streamclip /var/lib/streamclip/segments
+echo $$ > "$PIDFILE"
 SEQ=0
 [ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE" 2>/dev/null || echo 0)
-OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
-# Stream-copy remux only — preserves 1080p/60fps bitstream from the publisher.
-if ! ffmpeg -y -i "$SEG_PATH" -c copy -movflags +faststart "$OUT" 2>>"$LOG"; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remux_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
-  rm -f "$OUT"
-  # Fall back to uploading the native fMP4 if remux fails.
-  OUT="$SEG_PATH"
-fi
-SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT" 2>/dev/null || echo 0)
-KEY="tmp/lives/${{SAFE}}/seg_$(printf %04d "$SEQ").mp4"
-if [ -n "${{S3_BUCKET:-}}" ] && [ "$SIZE" -gt 0 ]; then
-  aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" || true
-fi
-if [ "$SIZE" -gt 0 ]; then
-  curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \\
-    -H "X-Streamclip-Ingest-Secret: $HOOK" \\
-    -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":300000}}" \\
-    "$EVENT_URL" || true
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
-fi
-SEQ=$((SEQ + 1))
-echo "$SEQ" > "$SEQFILE" || true
-rm -f "$SEG_PATH"
-[ "$OUT" != "$SEG_PATH" ] && rm -f "$OUT"
-ONSEG
-chmod +x /usr/local/bin/streamclip-on-record-complete
+trap 'rm -f "$PIDFILE"' EXIT
+# shellcheck disable=SC1091
+[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
+while true; do
+  START=$(date +%s)
+  PART="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").partial.mp4"
+  OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
+  rm -f "$PART" "$OUT"
+  # Local RTMP copy into fragmented MP4 (avoids moov stalls / sparse frames).
+  # No wallclock remapping — keeps source timestamps and full bitrate.
+  if ffmpeg -hide_banner -y \\
+      -rw_timeout 15000000 \\
+      -fflags +genpts+igndts \\
+      -i "rtmp://127.0.0.1:1935/${{PATH_NAME}}" \\
+      -t "$WINDOW_S" \\
+      -map 0 \\
+      -c copy \\
+      -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof \\
+      "$PART" 2>>"$LOG"; then
+    if ffmpeg -y -i "$PART" -c copy -movflags +faststart "$OUT" 2>>"$LOG"; then
+      rm -f "$PART"
+    else
+      mv -f "$PART" "$OUT" 2>/dev/null || OUT="$PART"
+    fi
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
+    rm -f "$PART" "$OUT"
+    OUT=""
+  fi
+  SIZE=0
+  if [ -n "$OUT" ] && [ -f "$OUT" ]; then
+    SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT" 2>/dev/null || echo 0)
+  fi
+  if [ "$SIZE" -ge "$MIN_BYTES" ]; then
+    KEY="tmp/lives/${{SAFE}}/seg_$(printf %04d "$SEQ").mp4"
+    exec 200>"$LOCKFILE"
+    flock -x 200
+    if [ -n "${{S3_BUCKET:-}}" ]; then
+      aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" || true
+    fi
+    curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \\
+      -H "X-Streamclip-Ingest-Secret: $HOOK" \\
+      -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":300000}}" \\
+      "$EVENT_URL" || true
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
+    SEQ=$((SEQ + 1))
+    echo "$SEQ" > "$SEQFILE" || true
+    flock -u 200
+    exec 200>&-
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
+  fi
+  rm -f "$OUT" "$PART"
+  # Always pace to a full 5-minute wall clock — failures must not accelerate.
+  ELAPSED=$(( $(date +%s) - START ))
+  REMAIN=$((WINDOW_S - ELAPSED))
+  if [ "$REMAIN" -gt 0 ]; then
+    sleep "$REMAIN"
+  fi
+done
+AGENT
+chmod +x /usr/local/bin/streamclip-segment-loop
+
+echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
+chmod +x /usr/local/bin/streamclip-analysis-agent.py
 
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
@@ -185,10 +221,11 @@ curl -fsS -X POST -H "Content-Type: application/json" \\
   -H "X-Streamclip-Ingest-Secret: $HOOK" \\
   -d "{{\\"event\\":\\"publisher_ready\\",\\"path\\":\\"$PATH_NAME\\",\\"protocol\\":\\"rtmp\\"}}" \\
   "$EVENT_URL" || true
-# Status only — HD buffering is MediaMTX native record (not ffmpeg RTSP).
-curl -fsS -X POST -H "Content-Type: application/json" \\
-  -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
-  "http://127.0.0.1:8080/start" || true
+if ! curl -fsS -X POST -H "Content-Type: application/json" \\
+    -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
+    "http://127.0.0.1:8080/start"; then
+  nohup /usr/local/bin/streamclip-segment-loop "$PATH_NAME" >>/var/log/streamclip-segment.log 2>&1 &
+fi
 ONREADY
 chmod +x /usr/local/bin/streamclip-on-ready
 
@@ -200,6 +237,12 @@ PATH_NAME="$1"
 curl -fsS -X POST -H "Content-Type: application/json" \\
   -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
   "http://127.0.0.1:8080/stop" || true
+SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+PIDFILE="/var/run/streamclip/seg_$SAFE.pid"
+if [ -f "$PIDFILE" ]; then
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
+fi
 curl -fsS -X POST -H "Content-Type: application/json" \\
   -H "X-Streamclip-Ingest-Secret: $HOOK" \\
   -d "{{\\"event\\":\\"publisher_disconnect\\",\\"path\\":\\"$PATH_NAME\\",\\"protocol\\":\\"rtmp\\"}}" \\
@@ -210,8 +253,7 @@ chmod +x /usr/local/bin/streamclip-on-not-ready
 # Quote heredoc so $MTX_PATH is written literally for MediaMTX to expand at runtime.
 cat > /etc/mediamtx/mediamtx.yml <<'YAML'
 logLevel: info
-# 1080p60 bursts: keep a large reader queue for HLS preview remux.
-# Power of 2 only. Native record is not a slow ffmpeg reader.
+# 1080p60 + HLS + segment ffmpeg reader: large write queue (power of 2).
 writeQueueSize: 8192
 # OBS / encoder stalls longer than 15s used to drop the publisher and fire
 # runOnNotReady while the agent stayed up — keep the RTMP path alive.
@@ -233,16 +275,10 @@ rtspAddress: :8554
 authMethod: http
 authHTTPAddress: AUTH_HTTP_ADDRESS_PLACEHOLDER
 pathDefaults:
-  # Native publisher recording = full source quality (1080p/60fps bitstream).
-  record: yes
-  recordPath: /var/lib/streamclip/segments/%path/%Y-%m-%d_%H-%M-%S-%f
-  recordFormat: fmp4
-  recordPartDuration: 1s
-  recordSegmentDuration: 5m
-  recordDeleteAfter: 2h
+  # Timed 5-min capture is owned by streamclip-segment-loop (exact cadence).
+  record: no
   runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH
   runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH
-  runOnRecordSegmentComplete: /usr/local/bin/streamclip-on-record-complete $MTX_PATH $MTX_SEGMENT_PATH
 paths:
   all_others:
 YAML

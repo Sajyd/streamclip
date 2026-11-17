@@ -1,8 +1,8 @@
 #!/bin/bash
-# Hot-patch a running dedicated ingest EC2:
-# - MediaMTX native 5-min HD record (full source fps/bitrate)
-# - on-record-complete → remux copy → S3 → API
-# - kill legacy ffmpeg RTSP segment loops (sparse-frame bug)
+# Hot-patch dedicated ingest EC2:
+# - Exact 5-min RTMP segment loop (wall-clock paced, rejects tiny flaps)
+# - Disable MediaMTX native record (was closing early + racing sequences)
+# - Refresh :8080 agent
 # Usage: INSTANCE_ID=i-xxx REGION=eu-north-1 ./scripts/ssm-patch-dedicated-agent.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,7 +12,6 @@ AGENT_B64="$(base64 < "$ROOT/backend/app/services/ingest_agent.py" | tr -d '\n')
 
 PARAMS=$(mktemp)
 trap 'rm -f "$PARAMS"' EXIT
-# Quoted heredoc so remote shell vars are not expanded locally.
 python3 - "$AGENT_B64" <<'PY' > "$PARAMS"
 import json, sys
 agent_b64 = sys.argv[1]
@@ -24,72 +23,100 @@ if [ ! -f /etc/streamclip/agent.env ]; then
   EVENT_URL=$(sed -n "s/.*EVENT_URL='\([^']*\)'.*/\1/p" /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 || true)
   S3_BUCKET=$(sed -n "s/.*S3_BUCKET='\([^']*\)'.*/\1/p" /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 || true)
   AWS_REGION=$(sed -n "s/.*AWS_REGION='\([^']*\)'.*/\1/p" /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 || true)
-  if [ -z "${HOOK:-}" ]; then HOOK=$(sed -n 's/.*export HOOK=\(.*\)/\1/p' /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 | tr -d "'" || true); fi
-  if [ -z "${EVENT_URL:-}" ]; then EVENT_URL=$(sed -n 's/.*export EVENT_URL=\(.*\)/\1/p' /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 | tr -d "'" || true); fi
-  if [ -z "${S3_BUCKET:-}" ]; then S3_BUCKET=$(sed -n 's/.*export S3_BUCKET=\(.*\)/\1/p' /usr/local/bin/streamclip-on-ready 2>/dev/null | head -1 | tr -d "'" || true); fi
-  # Prefer agent.env-style values already on disk if present in process env files.
-  if [ -z "${HOOK:-}" ] && [ -f /etc/streamclip/agent.env ]; then . /etc/streamclip/agent.env; fi
   AWS_REGION="${AWS_REGION:-eu-north-1}"
   printf 'HOOK=%s\nEVENT_URL=%s\nS3_BUCKET=%s\nAWS_REGION=%s\n' \
     "${HOOK:-}" "${EVENT_URL:-}" "${S3_BUCKET:-}" "$AWS_REGION" > /etc/streamclip/agent.env
 fi
-# If agent.env exists but was empty for S3, try to recover from prior scripts.
-. /etc/streamclip/agent.env
-if [ -z "${S3_BUCKET:-}" ] || [ -z "${HOOK:-}" ] || [ -z "${EVENT_URL:-}" ]; then
-  echo "WARN: agent.env missing fields; check /etc/streamclip/agent.env" >&2
-fi
+. /etc/streamclip/agent.env || true
 
 echo '__AGENT_B64__' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
 chmod +x /usr/local/bin/streamclip-analysis-agent.py
 
-# Kill legacy sparse-frame RTSP segment loops.
+# Stop old recorders (MediaMTX record hooks + any prior loops).
 pkill -f streamclip-segment-loop || true
+pkill -f streamclip-on-record-complete || true
 for pf in /var/run/streamclip/seg_*.pid; do
   [ -f "$pf" ] || continue
   kill "$(cat "$pf")" 2>/dev/null || true
   rm -f "$pf"
 done
+rm -f /usr/local/bin/streamclip-on-record-complete
 
-cat > /usr/local/bin/streamclip-on-record-complete <<'ONSEG'
+cat > /usr/local/bin/streamclip-segment-loop <<'AGENT'
 #!/bin/bash
 set -uo pipefail
-PATH_NAME="${1:-${MTX_PATH:-}}"
-SEG_PATH="${2:-${MTX_SEGMENT_PATH:-}}"
+PATH_NAME="$1"
+SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+PIDFILE="/var/run/streamclip/seg_${SAFE}.pid"
+SEQFILE="/var/run/streamclip/seg_${SAFE}.seq"
+LOCKFILE="/var/run/streamclip/seg_${SAFE}.lock"
 LOG="/var/log/streamclip-segment.log"
-[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
-if [ -z "$PATH_NAME" ] || [ -z "$SEG_PATH" ] || [ ! -s "$SEG_PATH" ]; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_skip path=$PATH_NAME seg=$SEG_PATH" >>"$LOG" || true
+WINDOW_S=300
+MIN_BYTES=1000000
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 0
 fi
-SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
-SEQFILE="/var/run/streamclip/seg_${SAFE}.seq"
-mkdir -p /var/run/streamclip /var/lib/streamclip/segments
+echo $$ > "$PIDFILE"
 SEQ=0
 [ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE" 2>/dev/null || echo 0)
-OUT="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").mp4"
-if ! ffmpeg -y -i "$SEG_PATH" -c copy -movflags +faststart "$OUT" 2>>"$LOG"; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) remux_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
-  rm -f "$OUT"
-  OUT="$SEG_PATH"
-fi
-SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT" 2>/dev/null || echo 0)
-KEY="tmp/lives/${SAFE}/seg_$(printf %04d "$SEQ").mp4"
-if [ -n "${S3_BUCKET:-}" ] && [ "$SIZE" -gt 0 ]; then
-  aws s3 cp "$OUT" "s3://${S3_BUCKET}/${KEY}" --region "${AWS_REGION:-eu-north-1}" || true
-fi
-if [ "$SIZE" -gt 0 ]; then
-  curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
-    -H "X-Streamclip-Ingest-Secret: $HOOK" \
-    -d "{\"event\":\"segment\",\"path\":\"${PATH_NAME}\",\"protocol\":\"rtmp\",\"storage_key\":\"${KEY}\",\"sequence\":${SEQ},\"size_bytes\":${SIZE},\"processed_ms\":300000}" \
-    "$EVENT_URL" || true
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
-fi
-SEQ=$((SEQ + 1))
-echo "$SEQ" > "$SEQFILE" || true
-rm -f "$SEG_PATH"
-[ "$OUT" != "$SEG_PATH" ] && rm -f "$OUT"
-ONSEG
-chmod +x /usr/local/bin/streamclip-on-record-complete
+trap 'rm -f "$PIDFILE"' EXIT
+[ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
+while true; do
+  START=$(date +%s)
+  PART="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").partial.mp4"
+  OUT="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").mp4"
+  rm -f "$PART" "$OUT"
+  if ffmpeg -hide_banner -y \
+      -rw_timeout 15000000 \
+      -fflags +genpts+igndts \
+      -i "rtmp://127.0.0.1:1935/${PATH_NAME}" \
+      -t "$WINDOW_S" \
+      -map 0 \
+      -c copy \
+      -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof \
+      "$PART" 2>>"$LOG"; then
+    if ffmpeg -y -i "$PART" -c copy -movflags +faststart "$OUT" 2>>"$LOG"; then
+      rm -f "$PART"
+    else
+      mv -f "$PART" "$OUT" 2>/dev/null || OUT="$PART"
+    fi
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
+    rm -f "$PART" "$OUT"
+    OUT=""
+  fi
+  SIZE=0
+  if [ -n "$OUT" ] && [ -f "$OUT" ]; then
+    SIZE=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
+  fi
+  if [ "$SIZE" -ge "$MIN_BYTES" ]; then
+    KEY="tmp/lives/${SAFE}/seg_$(printf %04d "$SEQ").mp4"
+    exec 200>"$LOCKFILE"
+    flock -x 200
+    if [ -n "${S3_BUCKET:-}" ]; then
+      aws s3 cp "$OUT" "s3://${S3_BUCKET}/${KEY}" --region "${AWS_REGION:-eu-north-1}" || true
+    fi
+    curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
+      -H "X-Streamclip-Ingest-Secret: $HOOK" \
+      -d "{\"event\":\"segment\",\"path\":\"${PATH_NAME}\",\"protocol\":\"rtmp\",\"storage_key\":\"${KEY}\",\"sequence\":${SEQ},\"size_bytes\":${SIZE},\"processed_ms\":300000}" \
+      "$EVENT_URL" || true
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
+    SEQ=$((SEQ + 1))
+    echo "$SEQ" > "$SEQFILE" || true
+    flock -u 200
+    exec 200>&-
+  else
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
+  fi
+  rm -f "$OUT" "$PART"
+  ELAPSED=$(( $(date +%s) - START ))
+  REMAIN=$((WINDOW_S - ELAPSED))
+  if [ "$REMAIN" -gt 0 ]; then
+    sleep "$REMAIN"
+  fi
+done
+AGENT
+chmod +x /usr/local/bin/streamclip-segment-loop
 
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
@@ -100,9 +127,11 @@ curl -fsS -X POST -H "Content-Type: application/json" \
   -H "X-Streamclip-Ingest-Secret: $HOOK" \
   -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
   "$EVENT_URL" || true
-curl -fsS -X POST -H "Content-Type: application/json" \
-  -d "{\"path\":\"$PATH_NAME\"}" \
-  "http://127.0.0.1:8080/start" || true
+if ! curl -fsS -X POST -H "Content-Type: application/json" \
+    -d "{\"path\":\"$PATH_NAME\"}" \
+    "http://127.0.0.1:8080/start"; then
+  nohup /usr/local/bin/streamclip-segment-loop "$PATH_NAME" >>/var/log/streamclip-segment.log 2>&1 &
+fi
 ONREADY
 chmod +x /usr/local/bin/streamclip-on-ready
 
@@ -113,6 +142,12 @@ PATH_NAME="$1"
 curl -fsS -X POST -H "Content-Type: application/json" \
   -d "{\"path\":\"$PATH_NAME\"}" \
   "http://127.0.0.1:8080/stop" || true
+SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+PIDFILE="/var/run/streamclip/seg_$SAFE.pid"
+if [ -f "$PIDFILE" ]; then
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
+fi
 curl -fsS -X POST -H "Content-Type: application/json" \
   -H "X-Streamclip-Ingest-Secret: $HOOK" \
   -d "{\"event\":\"publisher_disconnect\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
@@ -135,7 +170,6 @@ RestartSec=2
 WantedBy=multi-user.target
 UNIT
 
-# Ensure static ffmpeg is on PATH (AL2023 has no distro package).
 if ! command -v ffmpeg >/dev/null 2>&1; then
   FFDIR=$(mktemp -d)
   ARCH=$(uname -m)
@@ -150,11 +184,10 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   rm -rf "$FFDIR"
 fi
 
-# Patch MediaMTX: native HD record + larger write queue. Preserve authHTTPAddress.
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
   AUTH_LINE=$(grep -E '^authHTTPAddress:' /etc/mediamtx/mediamtx.yml | head -1 || true)
   [ -n "${AUTH_LINE:-}" ] || AUTH_LINE='authHTTPAddress: http://127.0.0.1/'
-  python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\nwriteQueueSize: 8192\nreadTimeout: 60s\nwriteTimeout: 60s\nrtmp: yes\nrtmpAddress: :1935\nsrt: yes\nsrtAddress: :8890\nwebrtc: no\nhls: yes\nhlsAddress: 127.0.0.1:8888\nhlsAlwaysRemux: yes\nhlsSegmentCount: 7\nhlsSegmentDuration: 1s\nrtsp: yes\nrtspAddress: :8554\nauthMethod: http\n"+auth+"\npathDefaults:\n  record: yes\n  recordPath: /var/lib/streamclip/segments/%path/%Y-%m-%d_%H-%M-%S-%f\n  recordFormat: fmp4\n  recordPartDuration: 1s\n  recordSegmentDuration: 5m\n  recordDeleteAfter: 2h\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\n  runOnRecordSegmentComplete: /usr/local/bin/streamclip-on-record-complete $MTX_PATH $MTX_SEGMENT_PATH\npaths:\n  all_others:\n")' "$AUTH_LINE"
+  python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\nwriteQueueSize: 8192\nreadTimeout: 60s\nwriteTimeout: 60s\nrtmp: yes\nrtmpAddress: :1935\nsrt: yes\nsrtAddress: :8890\nwebrtc: no\nhls: yes\nhlsAddress: 127.0.0.1:8888\nhlsAlwaysRemux: yes\nhlsSegmentCount: 7\nhlsSegmentDuration: 1s\nrtsp: yes\nrtspAddress: :8554\nauthMethod: http\n"+auth+"\npathDefaults:\n  record: no\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\npaths:\n  all_others:\n")' "$AUTH_LINE"
   systemctl restart mediamtx || true
 fi
 
@@ -165,7 +198,8 @@ sleep 1
 curl -fsS http://127.0.0.1:8080/health
 ss -lntp | grep -E '1935|8080' || true
 ffmpeg -version | head -1 || true
-grep -E 'record:|writeQueueSize|runOnRecord' /etc/mediamtx/mediamtx.yml || true
+grep -E 'record:|writeQueueSize|runOnReady' /etc/mediamtx/mediamtx.yml || true
+test -x /usr/local/bin/streamclip-segment-loop && echo segment_loop_ok
 """
 print(json.dumps({"commands": [script.replace("__AGENT_B64__", agent_b64)]}))
 PY
