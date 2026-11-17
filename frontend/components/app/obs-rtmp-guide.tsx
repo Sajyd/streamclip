@@ -250,12 +250,16 @@ export function PluginConnectStep({ creds }: { creds: Creds | null }) {
   );
 }
 
-/** Short Streamlabs path (no Multi RTMP plugin). */
-export function StreamlabsConnectStep({ creds }: { creds: Creds | null }) {
+/** Short Streamlabs path (no Multi RTMP plugin). Creds live in StreamKeyManager above. */
+export function StreamlabsConnectStep(_props?: { creds?: Creds | null }) {
   return (
     <div className="space-y-5">
       <ActionTitle title="Ajoutez STREAMCLIP dans Streamlabs" />
-      <CredsCard creds={creds} />
+      <p className="rounded-2xl border border-white/10 bg-ink-950/60 px-4 py-3 text-sm text-ink-300">
+        Utilisez le <strong className="text-white">serveur</strong> et la{" "}
+        <strong className="text-white">clé secrète</strong> affichés dans la section « Votre clé
+        STREAMCLIP » ci-dessus (après création ou régénération).
+      </p>
       <ol className="space-y-3 text-sm text-ink-200">
         <li className="flex gap-3">
           <span className="font-semibold text-brand-300">1.</span>
@@ -271,7 +275,7 @@ export function StreamlabsConnectStep({ creds }: { creds: Creds | null }) {
         </li>
         <li className="flex gap-3">
           <span className="font-semibold text-brand-300">3.</span>
-          <span>Collez serveur + clé, nommez « STREAMCLIP ».</span>
+          <span>Collez serveur + clé depuis la section clé, nommez « STREAMCLIP ».</span>
         </li>
         <li className="flex gap-3">
           <span className="font-semibold text-brand-300">4.</span>

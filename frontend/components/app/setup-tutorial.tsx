@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { StreamKeyManager } from "@/components/app/ingest-credentials";
 import {
@@ -53,9 +53,14 @@ export function SetupTutorial({
     return null;
   });
 
-  const serverHint = useMemo(
-    () => existingKey?.rtmps_url ?? rtmpUrl,
-    [existingKey?.rtmps_url, rtmpUrl],
+  const onIssued = useCallback(
+    (key: StreamKey) => {
+      const server = key.rtmps_url ?? rtmpUrl;
+      if (key.stream_key && server) {
+        setCreds({ server, streamKey: key.stream_key });
+      }
+    },
+    [rtmpUrl],
   );
 
   return (
@@ -93,8 +98,8 @@ export function SetupTutorial({
       <Card>
         <CardTitle>Votre clé STREAMCLIP</CardTitle>
         <CardDescription className="mt-2">
-          Créez ou régénérez la clé ici, puis collez-la dans le guide ci-dessous. La clé secrète
-          n’est affichée qu’une fois.
+          Créez ou régénérez la clé ici. Après régénération, le secret remplace le bloc « Clé
+          active » — copiez-le tout de suite.
         </CardDescription>
         <div className="mt-5">
           <StreamKeyManager
@@ -103,25 +108,9 @@ export function SetupTutorial({
             rtmpUrl={rtmpUrl}
             existingKey={existingKey}
             timeZone={timeZone}
-            hideIssuedBanner={Boolean(creds)}
-            onIssued={(key) => {
-              const server = key.rtmps_url ?? rtmpUrl;
-              if (key.stream_key && server) {
-                setCreds({ server, streamKey: key.stream_key });
-              }
-            }}
+            onIssued={onIssued}
           />
         </div>
-        {creds ? (
-          <p className="mt-4 text-sm text-ok-400">
-            Clé prête — elle est aussi affichée dans l’étape « Connecter ».
-          </p>
-        ) : serverHint ? (
-          <p className="mt-4 text-sm text-ink-400">
-            Serveur à utiliser : <code className="text-ink-200">{serverHint}</code>. Régénérez la clé
-            si vous ne l’avez plus.
-          </p>
-        ) : null}
       </Card>
 
       {platform === "obs" ? (
@@ -187,7 +176,7 @@ export function SetupTutorial({
         </Card>
       ) : (
         <Card>
-          <StreamlabsConnectStep creds={creds} />
+          <StreamlabsConnectStep />
         </Card>
       )}
     </div>

@@ -455,7 +455,6 @@ export function OnboardingWizard({
                 defaultLabel={software === "streamlabs" ? "Streamlabs" : "OBS"}
                 onIssued={captureKey}
                 compact
-                hideIssuedBanner
               />
             </div>
           )}

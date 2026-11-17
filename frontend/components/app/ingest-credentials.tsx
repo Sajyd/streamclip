@@ -66,22 +66,16 @@ function IssueOrRotateForm({
   submitLabel,
   pendingLabel,
   defaultLabel,
-  edgeRtmp,
   onIssued,
-  hideIssuedBanner = false,
 }: {
   action: (state: IssueKeyState, formData: FormData) => Promise<IssueKeyState>;
   submitLabel: string;
   pendingLabel: string;
   defaultLabel?: string;
-  edgeRtmp: string | null;
   onIssued?: (key: StreamKey) => void;
-  /** When parent already shows the clear secret (e.g. onboarding). */
-  hideIssuedBanner?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, INITIAL);
   const issued = state.key;
-  const serverUrl = issued?.rtmps_url ?? edgeRtmp;
 
   useEffect(() => {
     if (issued?.stream_key) {
@@ -91,16 +85,6 @@ function IssueOrRotateForm({
 
   return (
     <div className="space-y-4">
-      {!hideIssuedBanner && issued?.stream_key ? (
-        <div className="space-y-3">
-          <Notice tone="warn" title="Copiez ces valeurs maintenant">
-            La clé secrète ne sera plus jamais réaffichée après l&apos;onboarding. Dans OBS :
-            Service = Personnalisé, Serveur = URL RTMP, Clé = stream key.
-          </Notice>
-          {serverUrl ? <CopyField label="Serveur OBS / Streamlabs" value={serverUrl} /> : null}
-          <CopyField label="Clé de stream" value={issued.stream_key} />
-        </div>
-      ) : null}
       <form action={formAction} className="space-y-4">
         <label className="block space-y-1.5 text-sm">
           <span className="font-medium text-ink-200">Libellé (facultatif)</span>
@@ -146,7 +130,6 @@ export function StreamKeyManager({
   defaultLabel,
   onIssued,
   compact = false,
-  hideIssuedBanner = false,
 }: {
   canManage: boolean;
   ingestOnline: boolean;
@@ -157,9 +140,16 @@ export function StreamKeyManager({
   onIssued?: (key: StreamKey) => void;
   /** Shorter copy for onboarding. */
   compact?: boolean;
-  hideIssuedBanner?: boolean;
 }) {
-  const edgeRtmp = existingKey?.rtmps_url ?? rtmpUrl;
+  const [freshKey, setFreshKey] = useState<StreamKey | null>(null);
+  const edgeRtmp = freshKey?.rtmps_url ?? existingKey?.rtmps_url ?? rtmpUrl;
+  const activeMeta = freshKey ?? existingKey;
+  const clearSecret = freshKey?.stream_key ?? null;
+
+  function handleIssued(key: StreamKey) {
+    setFreshKey(key);
+    onIssued?.(key);
+  }
 
   return (
     <div className="space-y-4">
@@ -186,38 +176,47 @@ export function StreamKeyManager({
         </div>
       ) : null}
 
-      {existingKey ? (
-        <div className="space-y-2 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
+      {activeMeta || clearSecret ? (
+        <div className="space-y-3 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
           <p className="text-sm font-medium text-white">
-            {compact ? "Une clé existe déjà sur votre compte" : "Clé active"}
-            {!compact && existingKey.label ? (
-              <span className="ml-2 font-normal text-ink-400">· {existingKey.label}</span>
+            {compact ? "Votre clé STREAMCLIP" : "Clé active"}
+            {!compact && activeMeta?.label ? (
+              <span className="ml-2 font-normal text-ink-400">· {activeMeta.label}</span>
             ) : null}
           </p>
-          <p className="text-sm leading-relaxed text-ink-400">
-            {compact
-              ? "Le secret n’est plus visible ici. Régénérez pour l’afficher pendant l’onboarding, puis continuez."
-              : timeZone
-                ? `Créée le ${formatDateTime(existingKey.created_at, timeZone)}${
-                    existingKey.last_used_at
-                      ? ` · dernière utilisation ${formatDateTime(existingKey.last_used_at, timeZone)}`
-                      : ""
-                  }. Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau.`
-                : "Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau."}
-          </p>
+          {clearSecret ? (
+            <>
+              <Notice tone="warn" title="Copiez la clé maintenant">
+                Elle ne sera plus réaffichée après avoir quitté cette page. L&apos;ancienne clé ne
+                fonctionne plus.
+              </Notice>
+              {edgeRtmp ? <CopyField label="Serveur" value={edgeRtmp} /> : null}
+              <CopyField label="Clé secrète" value={clearSecret} />
+            </>
+          ) : (
+            <p className="text-sm leading-relaxed text-ink-400">
+              {compact
+                ? "Le secret n’est plus visible. Régénérez pour l’afficher, puis collez-le dans votre logiciel."
+                : timeZone && activeMeta
+                  ? `Créée le ${formatDateTime(activeMeta.created_at, timeZone)}${
+                      activeMeta.last_used_at
+                        ? ` · dernière utilisation ${formatDateTime(activeMeta.last_used_at, timeZone)}`
+                        : ""
+                    }. Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau.`
+                  : "Le secret n’est plus affiché — régénérez-le pour en obtenir un nouveau."}
+            </p>
+          )}
         </div>
       ) : null}
 
       {canManage ? (
-        !existingKey ? (
+        !existingKey && !freshKey ? (
           <IssueOrRotateForm
             action={issueIngestKeyAction}
             submitLabel="Créer ma clé"
             pendingLabel="Création…"
             defaultLabel={defaultLabel}
-            edgeRtmp={edgeRtmp}
-            onIssued={onIssued}
-            hideIssuedBanner={hideIssuedBanner}
+            onIssued={handleIssued}
           />
         ) : (
           <div className="space-y-4">
@@ -225,10 +224,8 @@ export function StreamKeyManager({
               action={rotateIngestKeyAction}
               submitLabel={compact ? "Régénérer pour afficher le secret" : "Régénérer la clé"}
               pendingLabel="Régénération…"
-              defaultLabel={existingKey.label || defaultLabel}
-              edgeRtmp={edgeRtmp}
-              onIssued={onIssued}
-              hideIssuedBanner={hideIssuedBanner}
+              defaultLabel={activeMeta?.label || defaultLabel}
+              onIssued={handleIssued}
             />
             {!compact ? (
               <Form
@@ -251,4 +248,3 @@ export function StreamKeyManager({
     </div>
   );
 }
-
