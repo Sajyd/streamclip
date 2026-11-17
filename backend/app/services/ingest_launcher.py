@@ -149,7 +149,6 @@ trap 'rm -f "$PIDFILE"' EXIT
 # shellcheck disable=SC1091
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
 while true; do
-  START=$(date +%s)
   PART="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").partial.mp4"
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
   rm -f "$PART" "$OUT"
@@ -194,15 +193,13 @@ while true; do
     echo "$SEQ" > "$SEQFILE" || true
     flock -u 200
     exec 200>&-
+    rm -f "$OUT" "$PART"
+    # Success already consumed ~WINDOW_S via ffmpeg -t; loop starts the next window.
   else
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
-  fi
-  rm -f "$OUT" "$PART"
-  # Always pace to a full 5-minute wall clock — failures must not accelerate.
-  ELAPSED=$(( $(date +%s) - START ))
-  REMAIN=$((WINDOW_S - ELAPSED))
-  if [ "$REMAIN" -gt 0 ]; then
-    sleep "$REMAIN"
+    rm -f "$OUT" "$PART"
+    # Failure: start the next full 5-min capture immediately (do not sleep out the rest).
+    continue
   fi
 done
 AGENT
