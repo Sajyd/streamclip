@@ -16,6 +16,9 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
+/** Dynamic id + client nav hooks — do not prerender the shell. */
+export const instant = false;
+
 type Props = PageProps<"/admin/lives/[id]">;
 
 async function LiveDetail({ params }: { params: Props["params"] }) {

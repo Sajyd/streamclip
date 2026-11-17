@@ -59,7 +59,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               <Logo />
             </Link>
             <div className="hidden md:block">
-              <AppNav />
+              <Suspense fallback={<Skeleton className="h-8 w-64" />}>
+                <AppNav />
+              </Suspense>
             </div>
           </div>
           <Suspense fallback={<Skeleton className="h-8 w-28" />}>
@@ -67,7 +69,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </Suspense>
         </div>
         <div className="border-t border-white/5 px-4 py-2 md:hidden">
-          <AppNav />
+          <Suspense fallback={<Skeleton className="h-8 w-full" />}>
+            <AppNav />
+          </Suspense>
         </div>
       </header>
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
