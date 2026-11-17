@@ -27,7 +27,7 @@ PLANS = [
     {
         "code": "free",
         "name": "Free",
-        "description": "Pour découvrir STREAMCLIP AI sur vos premiers lives.",
+        "description": "Pour découvrir STREAMCLIP sur vos premiers lives.",
         "price_cents": 0,
         "included_seconds": 1 * HOUR,
         "max_clips_per_session": 3,

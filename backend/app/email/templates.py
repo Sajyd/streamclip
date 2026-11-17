@@ -4,7 +4,7 @@ from html import escape
 
 from app.email.mailer import OutgoingEmail
 
-_BRAND = "STREAMCLIP AI"
+_BRAND = "STREAMCLIP"
 
 
 def _html(title: str, paragraphs: list[str], action: tuple[str, str] | None) -> str:

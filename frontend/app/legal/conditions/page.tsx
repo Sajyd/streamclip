@@ -5,7 +5,7 @@ import { LegalPage, LegalSection, PublisherIdentity } from "@/components/legal/l
 
 export const metadata: Metadata = {
   title: "Conditions d'utilisation",
-  description: "Conditions générales d'utilisation et de vente de STREAMCLIP AI.",
+  description: "Conditions générales d'utilisation et de vente de STREAMCLIP.",
 };
 
 export default function TermsPage() {
@@ -17,7 +17,7 @@ export default function TermsPage() {
 
       <LegalSection title="2. Objet du service">
         <p>
-          STREAMCLIP AI est un service en ligne destiné aux créateurs de contenu : il reçoit une copie
+          STREAMCLIP est un service en ligne destiné aux créateurs de contenu : il reçoit une copie
           d&apos;un live que vous lui envoyez depuis votre logiciel de diffusion, en repère les moments
           forts et en tire des clips verticaux sous-titrés que vous pouvez télécharger ou publier.
         </p>
@@ -33,7 +33,7 @@ export default function TermsPage() {
           <li>Vous devez fournir une adresse e-mail valide et garder votre mot de passe confidentiel.</li>
           <li>Vous êtes responsable de l&apos;activité réalisée depuis votre compte.</li>
           <li>
-            STREAMCLIP AI ne vous demande jamais le mot de passe ni la clé de diffusion de vos comptes
+            STREAMCLIP ne vous demande jamais le mot de passe ni la clé de diffusion de vos comptes
             Twitch, YouTube, Kick ou de vos réseaux sociaux.
           </li>
         </ul>
@@ -47,7 +47,7 @@ export default function TermsPage() {
           </li>
           <li>
             Les offres payantes sont des abonnements mensuels sans engagement, renouvelés
-            automatiquement et payables d&apos;avance. Le paiement est opéré par Stripe ; STREAMCLIP AI
+            automatiquement et payables d&apos;avance. Le paiement est opéré par Stripe ; STREAMCLIP
             ne voit ni ne conserve vos numéros de carte.
           </li>
           <li>

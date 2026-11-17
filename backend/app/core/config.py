@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     environment: Environment = "local"
-    app_name: str = "STREAMCLIP AI"
+    app_name: str = "STREAMCLIP"
     # Public origin of the web application (links in e-mails, Stripe return URLs).
     public_app_url: str = "http://localhost:3000"
     log_level: str = "INFO"
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
 
     # --- E-mail -------------------------------------------------------------
     email_transport: EmailTransport = "none"
-    email_from: str = "STREAMCLIP AI <no-reply@localhost>"
+    email_from: str = "STREAMCLIP <no-reply@localhost>"
     smtp_host: str = "localhost"
     smtp_port: int = 1025
     smtp_username: str | None = None

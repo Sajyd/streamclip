@@ -47,7 +47,7 @@ def lookup_key_for(plan_code: str) -> str:
 
 def _sync_product(client: stripe.StripeClient, plan: Plan, result: CatalogSyncResult) -> str:
     product_id = product_id_for(plan.code)
-    name = f"STREAMCLIP AI {plan.name}"
+    name = f"STREAMCLIP {plan.name}"
     description = plan.description or None
     # Stripe's parameter types are deeply nested TypedDicts; these payloads are
     # built dynamically, so they are passed as plain mappings.
@@ -165,10 +165,10 @@ def _sync_portal(
         },
     }
     params: Any = {
-        "name": "STREAMCLIP AI",
+        "name": "STREAMCLIP",
         "features": features,
         "default_return_url": f"{app_url.rstrip('/')}/billing",
-        "business_profile": {"headline": "Gérez votre abonnement STREAMCLIP AI"},
+        "business_profile": {"headline": "Gérez votre abonnement STREAMCLIP"},
         "metadata": {MANAGED_FLAG: "true"},
     }
     managed = [
@@ -209,7 +209,7 @@ def _sync_webhook(
             "enabled_events": events,
             # Pinned: events keep this shape even if the account default changes.
             "api_version": api_version,
-            "description": "STREAMCLIP AI - subscription lifecycle",
+            "description": "STREAMCLIP - subscription lifecycle",
             "metadata": {MANAGED_FLAG: "true"},
         }
     )

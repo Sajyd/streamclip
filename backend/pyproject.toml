@@ -1,7 +1,7 @@
 [project]
 name = "streamclip-backend"
 version = "0.1.0"
-description = "STREAMCLIP AI - control plane API, workers and ingestion services"
+description = "STREAMCLIP - control plane API, workers and ingestion services"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.163,<1",

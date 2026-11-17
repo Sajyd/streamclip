@@ -43,7 +43,7 @@ async def test_smtp_transport_delivers_a_multipart_message(settings: Settings) -
                 update={
                     "smtp_host": "127.0.0.1",
                     "smtp_port": port,
-                    "email_from": "STREAMCLIP AI <no-reply@streamclip.test>",
+                    "email_from": "STREAMCLIP <no-reply@streamclip.test>",
                 }
             )
         )
@@ -57,7 +57,7 @@ async def test_smtp_transport_delivers_a_multipart_message(settings: Settings) -
     assert envelope.mail_from == "no-reply@streamclip.test"
     assert envelope.rcpt_tos == ["lea@example.com"]
     message = message_from_bytes(envelope.content, policy=policy.default)
-    assert message["Subject"] == "Confirmez votre adresse e-mail — STREAMCLIP AI"
+    assert message["Subject"] == "Confirmez votre adresse e-mail — STREAMCLIP"
     assert message["To"] == "lea@example.com"
     text = message.get_body(preferencelist=("plain",))
     html = message.get_body(preferencelist=("html",))

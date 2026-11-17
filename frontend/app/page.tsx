@@ -8,7 +8,7 @@ import { Notice } from "@/components/ui/primitives";
 
 const STEPS = [
   {
-    title: "Ajoutez STREAMCLIP AI dans OBS",
+    title: "Ajoutez STREAMCLIP dans OBS",
     body: "Copiez l'adresse RTMPS ou SRT et votre clé d'ingestion personnelle comme destination supplémentaire. Votre diffusion habituelle ne change pas.",
   },
   {
@@ -56,7 +56,7 @@ const QUESTIONS = [
   {
     question: "Dois-je communiquer ma clé de stream ou mes mots de passe ?",
     answer:
-      "Non. Vous envoyez une copie de votre flux vers STREAMCLIP AI avec une clé d'ingestion qui lui est propre. Nous ne demandons jamais vos clés de diffusion ni les mots de passe de vos comptes Twitch, YouTube, Kick ou de vos réseaux sociaux.",
+      "Non. Vous envoyez une copie de votre flux vers STREAMCLIP avec une clé d'ingestion qui lui est propre. Nous ne demandons jamais vos clés de diffusion ni les mots de passe de vos comptes Twitch, YouTube, Kick ou de vos réseaux sociaux.",
   },
   {
     question: "Comment ma consommation est-elle comptée ?",
@@ -133,14 +133,14 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
           <div className="mx-auto grid w-full max-w-6xl items-center gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16 lg:py-24">
             <div className="animate-fade-up">
               <p className="text-sm font-medium tracking-[0.18em] text-brand-300 uppercase">
-                STREAMCLIP AI
+                STREAMCLIP
               </p>
               <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-[3.4rem] lg:leading-[1.08]">
                 Vos lives deviennent des{" "}
                 <span className="text-gradient">clips verticaux</span> prêts à publier
               </h1>
               <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
-                STREAMCLIP AI suit votre live, repère les moments forts et prépare des clips 9:16
+                STREAMCLIP suit votre live, repère les moments forts et prépare des clips 9:16
                 sous-titrés pour YouTube Shorts, TikTok et Instagram.
               </p>
               <div className="mt-9 flex flex-wrap gap-3">

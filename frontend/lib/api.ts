@@ -3,7 +3,7 @@ import "server-only";
 import { headers } from "next/headers";
 
 /**
- * Server-side client of the STREAMCLIP AI API.
+ * Server-side client of the STREAMCLIP API.
  *
  * The browser never talks to the API: every call goes through this module,
  * running on the web server (backend-for-frontend). It authenticates itself

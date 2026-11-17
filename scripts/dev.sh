@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run STREAMCLIP AI on this machine, without Docker.
+# Run STREAMCLIP on this machine, without Docker.
 #
 #   scripts/dev.sh setup     # local database + roles + migrations (run once)
 #   scripts/dev.sh api       # API on http://127.0.0.1:8000 (auto-reload)

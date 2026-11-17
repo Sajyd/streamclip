@@ -139,7 +139,7 @@ export function IngestPanel({
             <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Ingestion</p>
             <CardTitle className="mt-2">Connexion OBS</CardTitle>
             <CardDescription>
-              Ajoutez STREAMCLIP AI comme destination supplémentaire. Vos clés Twitch, YouTube ou
+              Ajoutez STREAMCLIP comme destination supplémentaire. Vos clés Twitch, YouTube ou
               Kick ne sont jamais demandées.
             </CardDescription>
           </div>

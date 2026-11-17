@@ -14,7 +14,7 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-white/5 bg-ink-950/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-        <Link href="/" aria-label="STREAMCLIP AI — accueil" className="shrink-0">
+        <Link href="/" aria-label="STREAMCLIP — accueil" className="shrink-0">
           <Logo />
         </Link>
         <nav aria-label="Navigation principale" className="hidden items-center gap-1 md:flex">

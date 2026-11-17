@@ -1,4 +1,4 @@
-# Architecture — STREAMCLIP AI
+# Architecture — STREAMCLIP
 
 Livrables du §24 du cahier des charges. État : **phase 1 livrée** (fondations,
 auth, multi-tenant, facturation, stockage, interface). Les phases 2–5

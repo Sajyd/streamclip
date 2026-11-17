@@ -1,4 +1,4 @@
-# MediaMTX configuration for STREAMCLIP AI local / self-hosted ingest.
+# MediaMTX configuration for STREAMCLIP local / self-hosted ingest.
 # The control plane authenticates publishers via HTTP hooks.
 #
 # Required env (compose):

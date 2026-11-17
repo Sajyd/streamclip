@@ -21,7 +21,7 @@ export default function GlobalError({ retry }: { error: unknown; retry: () => vo
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        <title>Une erreur est survenue · STREAMCLIP AI</title>
+        <title>Une erreur est survenue · STREAMCLIP</title>
         <h1 style={{ fontSize: "1.5rem", margin: 0 }}>Une erreur est survenue</h1>
         <p style={{ margin: 0, color: "#a3a3b5" }}>La page n&apos;a pas pu être affichée.</p>
         <button

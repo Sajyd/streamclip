@@ -4,7 +4,7 @@ import { LegalPage, LegalSection, PublisherIdentity, publisher } from "@/compone
 
 export const metadata: Metadata = {
   title: "Politique de confidentialité",
-  description: "Les données traitées par STREAMCLIP AI, leur usage, leur durée de conservation et vos droits.",
+  description: "Les données traitées par STREAMCLIP, leur usage, leur durée de conservation et vos droits.",
 };
 
 export default function PrivacyPage() {

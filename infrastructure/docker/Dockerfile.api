@@ -1,4 +1,4 @@
-# STREAMCLIP AI — API image (local / self-hosted; Vercel uses the Python runtime).
+# STREAMCLIP — API image (local / self-hosted; Vercel uses the Python runtime).
 # Build from the repository root:
 #   docker build -f infrastructure/docker/Dockerfile.api -t streamclip-api .
 FROM python:3.12-slim-bookworm AS base

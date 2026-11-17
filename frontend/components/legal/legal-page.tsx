@@ -45,10 +45,10 @@ export function PublisherIdentity() {
   return (
     <>
       {publisher.identity ? (
-        <p>Le service STREAMCLIP AI est édité par {publisher.identity}.</p>
+        <p>Le service STREAMCLIP est édité par {publisher.identity}.</p>
       ) : (
         <p>
-          Le service STREAMCLIP AI est actuellement proposé en accès anticipé. L&apos;identité complète
+          Le service STREAMCLIP est actuellement proposé en accès anticipé. L&apos;identité complète
           de l&apos;éditeur (dénomination, adresse, immatriculation) sera publiée sur cette page avant
           toute ouverture commerciale.
         </p>

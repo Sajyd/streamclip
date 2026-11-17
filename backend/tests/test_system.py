@@ -75,7 +75,7 @@ async def test_readiness_reports_an_unreachable_database(settings: Settings) -> 
 
 async def test_meta_describes_real_capabilities(client: httpx.AsyncClient) -> None:
     body = (await client.get(f"{API}/meta")).json()
-    assert body["name"] == "STREAMCLIP AI" and body["environment"] == "test"
+    assert body["name"] == "STREAMCLIP" and body["environment"] == "test"
     assert body["password_min_length"] == 10
     assert body["capabilities"] == {
         "registration_open": True,

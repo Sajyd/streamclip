@@ -8,7 +8,7 @@ export default function OnboardingLayout({ children }: { children: ReactNode }) 
     <div className="page-glow flex min-h-full flex-1 flex-col">
       <header className="border-b border-white/5 bg-ink-950/70 backdrop-blur-xl">
         <div className="mx-auto flex h-14 w-full max-w-3xl items-center px-4 sm:px-6">
-          <Link href="/onboarding" aria-label="STREAMCLIP AI">
+          <Link href="/onboarding" aria-label="STREAMCLIP">
             <Logo />
           </Link>
         </div>

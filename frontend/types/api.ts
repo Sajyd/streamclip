@@ -1,4 +1,4 @@
-// Shapes returned by the STREAMCLIP AI API (/api/v1). The API is the source
+// Shapes returned by the STREAMCLIP API (/api/v1). The API is the source
 // of truth: these types only describe what the web application reads.
 
 export type Capabilities = {

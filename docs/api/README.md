@@ -1,4 +1,4 @@
-# API STREAMCLIP AI
+# API STREAMCLIP
 
 Préfixe : `/api/v1`. Enveloppe d'erreur :
 

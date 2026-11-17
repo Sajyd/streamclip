@@ -1,4 +1,4 @@
-# STREAMCLIP AI
+# STREAMCLIP
 
 SaaS multi-tenant qui reçoit une copie de vos lives (clé d’ingestion STREAMCLIP),
 analyse le contenu et prépare des clips verticaux sous-titrés.

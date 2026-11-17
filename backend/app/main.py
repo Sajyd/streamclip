@@ -31,7 +31,7 @@ def create_app(settings: Settings | None = None, ctx: AppContext | None = None) 
     # Interactive documentation is not exposed in production.
     expose_docs = not settings.is_production
     application = FastAPI(
-        title="STREAMCLIP AI API",
+        title="STREAMCLIP API",
         version=settings.release[:12],
         lifespan=lifespan,
         docs_url=f"{API_PREFIX}/docs" if expose_docs else None,

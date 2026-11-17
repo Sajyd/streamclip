@@ -1,4 +1,4 @@
-# Rapport de fin de phase 1 — STREAMCLIP AI
+# Rapport de fin de phase 1 — STREAMCLIP
 
 Date : 2026-11-16 · Branche : `prod` · Commit initial : `eb1bcb4`
 

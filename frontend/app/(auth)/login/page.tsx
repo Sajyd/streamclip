@@ -20,7 +20,7 @@ export default function LoginPage({ searchParams }: PageProps<"/login">) {
         <RedirectIfSignedIn />
       </Suspense>
       <h1 className="text-2xl font-semibold tracking-tight text-white">Connexion</h1>
-      <p className="mt-2 mb-6 text-sm text-ink-300">Retrouvez votre espace STREAMCLIP AI.</p>
+      <p className="mt-2 mb-6 text-sm text-ink-300">Retrouvez votre espace STREAMCLIP.</p>
       <Suspense fallback={null}>
         <ReasonNotice searchParams={searchParams} />
       </Suspense>

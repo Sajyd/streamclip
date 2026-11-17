@@ -7,19 +7,19 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 const description =
-  "STREAMCLIP AI analyse vos lives et prépare des clips verticaux sous-titrés, " +
+  "STREAMCLIP analyse vos lives et prépare des clips verticaux sous-titrés, " +
   "prêts pour YouTube Shorts, TikTok et Instagram.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.PUBLIC_APP_URL ?? "http://localhost:3000"),
-  title: { default: "STREAMCLIP AI — vos lives en clips verticaux", template: "%s · STREAMCLIP AI" },
+  title: { default: "STREAMCLIP — vos lives en clips verticaux", template: "%s · STREAMCLIP" },
   description,
-  applicationName: "STREAMCLIP AI",
+  applicationName: "STREAMCLIP",
   openGraph: {
     type: "website",
     locale: "fr_FR",
-    siteName: "STREAMCLIP AI",
-    title: "STREAMCLIP AI — vos lives en clips verticaux",
+    siteName: "STREAMCLIP",
+    title: "STREAMCLIP — vos lives en clips verticaux",
     description,
   },
 };

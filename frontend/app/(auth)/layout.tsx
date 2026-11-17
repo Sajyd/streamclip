@@ -6,7 +6,7 @@ import { Logo } from "@/components/ui/primitives";
 export default function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-full flex-1 flex-col items-center justify-center px-4 py-12">
-      <Link href="/" aria-label="STREAMCLIP AI — accueil" className="mb-8">
+      <Link href="/" aria-label="STREAMCLIP — accueil" className="mb-8">
         <Logo className="text-lg" />
       </Link>
       <main className="surface w-full max-w-md p-6 sm:p-8">{children}</main>
