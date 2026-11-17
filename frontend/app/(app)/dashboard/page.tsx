@@ -3,16 +3,23 @@ import { Suspense } from "react";
 
 import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
+import {
+  getLiveHighlightsAction,
+  getLivePlaybackAction,
+} from "@/app/actions/live";
 import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
 import { ClipsLibrary } from "@/components/app/clips-library";
 import { LiveDetector } from "@/components/app/live-detector";
+import { LiveMonitor } from "@/components/app/live-monitor";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
 import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
 import {
   getBillingOverview,
   getClips,
+  getHighlights,
   getIngestSessions,
+  getLivePlayback,
   getNotifications,
   requireSession,
 } from "@/lib/dal";
@@ -33,13 +40,31 @@ const SEVERITY_DOT: Record<Notification["severity"], string> = {
 async function Dashboard() {
   const { token, me } = await requireSession(PATH);
   const { user, capabilities } = me;
-  const [overview, notifications, ingestSessions, clips] = await Promise.all([
-    getBillingOverview(token, PATH),
-    getNotifications(token, PATH),
-    capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
-    getClips(token, PATH),
-  ]);
+  const [overview, notifications, ingestSessions, clips, playback, highlights] =
+    await Promise.all([
+      getBillingOverview(token, PATH),
+      getNotifications(token, PATH),
+      capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
+      getClips(token, PATH),
+      capabilities.ingest_keys
+        ? getLivePlayback(token, PATH)
+        : Promise.resolve({
+            status: "offline" as const,
+            session_id: null,
+            public_id: null,
+            title: null,
+            rtmp_url: null,
+            preview_available: false,
+            message: "",
+            stream_key_hint: null,
+            preview_token: null,
+          }),
+      capabilities.ingest_keys ? getHighlights(token, PATH) : Promise.resolve([]),
+    ]);
   const timeZone = user.timezone;
+  const liveHighlights = playback.session_id
+    ? highlights.filter((h) => h.stream_session_id === playback.session_id)
+    : [];
 
   return (
     <div className="space-y-8">
@@ -56,6 +81,9 @@ async function Dashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ButtonLink href="/live" variant="secondary" size="sm">
+            Onglet Live
+          </ButtonLink>
           <ButtonLink href="/guide" variant="secondary" size="sm">
             Guide OBS / Streamlabs
           </ButtonLink>
@@ -69,6 +97,18 @@ async function Dashboard() {
       </div>
 
       {capabilities.ingest_keys ? <LiveDetector sessions={ingestSessions} /> : null}
+
+      {capabilities.ingest_keys ? (
+        <LiveMonitor
+          initialPlayback={playback}
+          initialHighlights={liveHighlights}
+          hlsBase="/live/stream"
+          refreshPlayback={getLivePlaybackAction}
+          refreshHighlights={getLiveHighlightsAction}
+          timeZone={timeZone}
+          compact
+        />
+      ) : null}
 
       {overview.payment_failed ? (
         <Notice tone="danger" title="Le dernier paiement a échoué">

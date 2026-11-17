@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import Admin, Ctx, Meta, Staff
 from app.core.errors import NotFoundError
@@ -21,9 +21,11 @@ from app.schemas.api import (
     AdminSubscriptionSummary,
     AdminUserList,
     AdminUserOut,
+    LivePlaybackOut,
     SuspendRequest,
 )
 from app.services import admin as admin_service
+from app.services import playback as playback_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -106,6 +108,29 @@ async def get_live(_staff: Staff, ctx: Ctx, live_id: uuid.UUID) -> AdminLiveDeta
     if detail is None:
         raise NotFoundError("Live introuvable.", code="live_not_found")
     return AdminLiveDetailOut(**detail)
+
+
+@router.get("/lives/{live_id}/playback", response_model=LivePlaybackOut)
+async def get_live_playback(_staff: Staff, ctx: Ctx, live_id: uuid.UUID) -> LivePlaybackOut:
+    """Staff live preview — session auth only; no user OBS secret."""
+    info = await playback_service.playback_for_live(ctx, live_id)
+    return LivePlaybackOut(**playback_service.info_to_dict(info, ctx.settings))
+
+
+@router.get("/lives/{live_id}/playback/hls/{file_path:path}")
+async def proxy_live_hls(
+    _staff: Staff, ctx: Ctx, live_id: uuid.UUID, file_path: str
+) -> Response:
+    """Staff HLS proxy (session → dedicated agent). No OBS secret required."""
+    if not file_path or ".." in file_path:
+        raise NotFoundError("Segment introuvable.", code="preview_not_found")
+    info = await playback_service.playback_for_live(ctx, live_id)
+    body, content_type = await playback_service.proxy_hls(ctx, info, file_path=file_path)
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
+    )
 
 
 @router.get("/clips", response_model=AdminClipList)

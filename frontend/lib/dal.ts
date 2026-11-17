@@ -12,6 +12,7 @@ import type {
   Clip,
   DataExport,
   Highlight,
+  LivePlayback,
   Me,
   Meta,
   NotificationList,
@@ -119,6 +120,27 @@ export async function getIngestKey(token: string, next: string): Promise<StreamK
 
 export async function getIngestSessions(token: string, next: string): Promise<StreamSession[]> {
   return unwrap(await api<{ items: StreamSession[] }>("/ingest/sessions", { token }), next).items;
+}
+
+export async function getLivePlayback(token: string, next: string): Promise<LivePlayback> {
+  const result = await api<LivePlayback>("/ingest/playback", { token });
+  if (result.ok) {
+    return result.data;
+  }
+  if (result.error.status === 404 || result.error.status === 503) {
+    return {
+      status: "offline",
+      session_id: null,
+      public_id: null,
+      title: null,
+      rtmp_url: null,
+      preview_available: false,
+      message: result.error.message,
+      stream_key_hint: null,
+      preview_token: null,
+    };
+  }
+  return unwrap(result, next);
 }
 
 export async function getOnboarding(token: string, next: string): Promise<Onboarding> {

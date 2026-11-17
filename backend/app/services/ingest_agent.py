@@ -2,11 +2,15 @@
 """Dedicated EC2 analysis agent on :8080.
 
 Public GET /health and /status (JSON or HTML). POST /start|/stop localhost-only.
-Never exposes secrets, stream keys, or full remote control to the internet.
+GET /hls/… proxies local MediaMTX HLS (127.0.0.1:8888) for dashboard preview —
+gated by the ingest hook secret or a short-lived API preview token (no OBS secret).
+Never exposes stream secrets or full remote control to the internet.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import json
 import os
@@ -16,18 +20,22 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("STREAMCLIP_AGENT_PORT", "8080"))
+HLS_UPSTREAM = os.environ.get("STREAMCLIP_HLS_UPSTREAM", "http://127.0.0.1:8888")
 STATE_DIR = Path(os.environ.get("STREAMCLIP_STATE_DIR", "/var/run/streamclip"))
 SEGMENTS_DIR = Path(os.environ.get("STREAMCLIP_SEGMENTS_DIR", "/var/lib/streamclip/segments"))
 LOG = Path(os.environ.get("STREAMCLIP_AGENT_LOG", "/var/log/streamclip-agent.log"))
 MAX_BODY = 4096
 RATE_LIMIT_PER_MIN = 120
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,198}$")
+_SAFE_HLS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,240}$")
 
 _lock = threading.Lock()
 _loops: dict[str, subprocess.Popen] = {}
@@ -311,6 +319,72 @@ def _fmt_uptime(seconds: int) -> str:
     return f"{s}s"
 
 
+def _hook_secret() -> str:
+    return (os.environ.get("HOOK") or os.environ.get("INGEST_HOOK_SECRET") or "").strip()
+
+
+def _authorized_preview(handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> bool:
+    """Allow HLS proxy with hook secret header/query or API-minted preview token.
+
+    Never requires the user's clear OBS stream secret.
+    """
+    expected = _hook_secret()
+    if not expected:
+        return True
+    header = (handler.headers.get("X-Streamclip-Ingest-Secret") or "").strip()
+    if header and hmac.compare_digest(header, expected):
+        return True
+    provided = (query.get("ingest_secret") or query.get("secret") or [None])[0]
+    if provided and hmac.compare_digest(str(provided), expected):
+        return True
+    token = (query.get("token") or [None])[0]
+    if not token or not str(token).startswith("pb."):
+        return False
+    parts = str(token).split(".")
+    if len(parts) != 4:
+        return False
+    _, public_id, exp_s, sig = parts
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    if exp < int(time.time()):
+        return False
+    payload = f"{public_id}:{exp}".encode()
+    expected_sig = hmac.new(expected.encode(), payload, hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, expected_sig)
+
+
+def _proxy_hls(handler: BaseHTTPRequestHandler, subpath: str) -> None:
+    if not subpath or ".." in subpath or not _SAFE_HLS.match(subpath):
+        handler._json(404, {"ok": False, "error": "not_found"})
+        return
+    upstream = f"{HLS_UPSTREAM.rstrip('/')}/{subpath.lstrip('/')}"
+    try:
+        with urllib.request.urlopen(upstream, timeout=8) as resp:  # noqa: S310
+            data = resp.read()
+            content_type = resp.headers.get("Content-Type") or "application/octet-stream"
+            handler.send_response(200)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Length", str(len(data)))
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("Access-Control-Allow-Origin", "*")
+            handler._security_headers()
+            handler.end_headers()
+            handler.wfile.write(data)
+    except urllib.error.HTTPError as exc:
+        body = exc.read() if exc.fp else b""
+        handler.send_response(exc.code)
+        handler.send_header("Content-Type", exc.headers.get("Content-Type", "text/plain"))
+        handler.send_header("Content-Length", str(len(body)))
+        handler._security_headers()
+        handler.end_headers()
+        handler.wfile.write(body)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"hls proxy error path={subpath} err={exc}")
+        handler._json(502, {"ok": False, "error": "hls_unavailable"})
+
+
 def _wants_html(handler: BaseHTTPRequestHandler) -> bool:
     qs = parse_qs(urlparse(handler.path).query)
     fmt = ((qs.get("format") or [None])[0] or "").lower()
@@ -511,6 +585,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._html(200, "status", payload, page="status")
             else:
                 self._json(200, payload)
+            return
+        if path.startswith("/hls/"):
+            qs = parse_qs(parsed.query)
+            if not _authorized_preview(self, qs):
+                self._json(401, {"ok": False, "error": "unauthorized"})
+                return
+            _proxy_hls(self, path[len("/hls/") :])
             return
         self._json(404, {"ok": False, "error": "not_found"})
 

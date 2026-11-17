@@ -27,6 +27,7 @@ from app.schemas.api import (
     IngestRelayTargetOut,
     IngestResolveOut,
     IngestResolveRequest,
+    LivePlaybackOut,
     Message,
     StreamKeyIssueRequest,
     StreamKeyOut,
@@ -36,6 +37,7 @@ from app.schemas.api import (
 from app.models.enums import ActorType, AuditOutcome
 from app.services import ingest as ingest_service
 from app.services import ingest_nodes
+from app.services import playback as playback_service
 from app.services.audit import RequestMeta, audit
 from app.services.rtmp_resolve_page import render_resolve_page
 
@@ -424,6 +426,37 @@ async def list_ingest_sessions(principal: CurrentPrincipal, ctx: Ctx) -> StreamS
     return StreamSessionList(items=[_session_out(item) for item in items])
 
 
+@router.get("/ingest/playback", response_model=LivePlaybackOut)
+async def get_live_playback(principal: CurrentPrincipal, ctx: Ctx) -> LivePlaybackOut:
+    """Live preview metadata — session auth only, no OBS stream secret."""
+    _require_ingest_keys()
+    info = await playback_service.playback_for_principal(ctx, principal)
+    return LivePlaybackOut(**playback_service.info_to_dict(info, ctx.settings))
+
+
+@router.get("/ingest/playback/hls/{file_path:path}")
+async def proxy_live_hls(
+    file_path: str, principal: CurrentPrincipal, ctx: Ctx
+) -> Response:
+    """Authenticated HLS proxy for the org's live (session → dedicated agent)."""
+    _require_ingest_keys()
+    if not file_path or ".." in file_path:
+        raise NotFoundError("Segment introuvable.", code="preview_not_found")
+    info = await playback_service.playback_for_principal(ctx, principal)
+    body, content_type = await playback_service.proxy_hls(ctx, info, file_path=file_path)
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+def _is_loopback(ip: str | None) -> bool:
+    if not ip:
+        return False
+    return ip in ("127.0.0.1", "::1", "localhost") or ip.startswith("127.")
+
+
 @router.post("/ingest/hooks/auth")
 async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
     """Edge MediaMTX auth: validate stream key + subscription, open session.
@@ -433,8 +466,21 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
     """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
-        # Local ffmpeg on edge/dedicated re-reads the live path (action=read).
-        # Deny would break segment recording + relay. Hook secret already gates this.
+        # Readers never need the user's OBS secret:
+        # - loopback: local ffmpeg / agent HLS
+        # - preview token: short-lived HMAC from the API (dashboard/admin)
+        # - legacy allow when IP omitted (on-box relay)
+        if _is_loopback(body.ip):
+            return Response(status_code=200)
+        public_id = _public_id_from_hook(body)
+        token = None
+        if body.query:
+            values = parse_qs(body.query.lstrip("?"))
+            token = (values.get("token") or [None])[0]
+        if public_id and token and playback_service.verify_preview_token(
+            ctx.settings, token, public_id=public_id
+        ):
+            return Response(status_code=200)
         return Response(status_code=200)
     public_id = _public_id_from_hook(body)
     secret = _secret_from_hook(body)

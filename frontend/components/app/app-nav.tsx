@@ -7,6 +7,7 @@ import { cx } from "@/lib/format";
 
 const LINKS = [
   { href: "/dashboard", label: "Tableau de bord" },
+  { href: "/live", label: "Live" },
   { href: "/highlights", label: "Highlights" },
   { href: "/clips", label: "Clips" },
   { href: "/calendar", label: "Calendrier" },
