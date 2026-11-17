@@ -640,10 +640,12 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
                 session, organization_id=key.organization_id
             )
         elif event == "segment" and body.storage_key and body.sequence is not None:
-            processed = body.processed_ms or 300_000
-            await ingest_service.record_processed_tick(
-                session, stream, processed_ms=processed
-            )
+            # Segments drive analysis only. Wall-clock billing is via tick (edge)
+            # and session close — charging here would double-count the free hour.
+            from datetime import UTC, datetime
+
+            stream.last_media_at = datetime.now(UTC)
+            await session.flush()
             from app.tasks.queue import enqueue
 
             await enqueue(

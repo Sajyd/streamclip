@@ -133,8 +133,9 @@ trap 'rm -f "$PIDFILE"' EXIT
 while true; do
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
   rm -f "$OUT"
-  if ! ffmpeg -y -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \\
-      -rw_timeout 15000000 -i "rtmp://127.0.0.1/${{PATH_NAME}}" \\
+  if ! ffmpeg -y -rtsp_transport tcp -fflags +genpts+igndts \\
+      -use_wallclock_as_timestamps 1 \\
+      -i "rtsp://127.0.0.1:8554/${{PATH_NAME}}" \\
       -t 300 -c copy -f mp4 -movflags +faststart "$OUT"; then
     sleep 2
     continue
@@ -198,7 +199,8 @@ srt: yes
 srtAddress: :8890
 webrtc: no
 hls: no
-rtsp: no
+rtsp: yes
+rtspAddress: :8554
 authMethod: http
 authHTTPAddress: AUTH_HTTP_ADDRESS_PLACEHOLDER
 pathDefaults:

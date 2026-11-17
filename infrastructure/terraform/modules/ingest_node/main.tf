@@ -198,22 +198,44 @@ locals {
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
       -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
       "$EVENT_URL" || true
-    # genpts/igndts: OBS H264 DTS jumps otherwise kill -c copy within seconds
+    # Local remux via RTSP — MediaMTX RTMP readers die on OBS DTS jumps.
     exec ffmpeg -hide_banner -loglevel warning \
-      -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
-      -rw_timeout 15000000 \
-      -i "rtmp://127.0.0.1/$PATH_NAME" \
+      -rtsp_transport tcp -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
+      -i "rtsp://127.0.0.1:8554/$PATH_NAME" \
       -c copy -f flv -flvflags no_duration_filesize \
       "$TARGET"
     RELAY
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-relay
     chmod +x /usr/local/bin/streamclip-edge-relay
 
+    cat > /usr/local/bin/streamclip-edge-tick <<'TICK'
+    #!/bin/bash
+    PATH_NAME="$1"
+    SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
+    mkdir -p /var/run/streamclip
+    PIDFILE="/var/run/streamclip/tick_$${SAFE}.pid"
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      exit 0
+    fi
+    echo $$ > "$PIDFILE"
+    trap 'rm -f "$PIDFILE"' EXIT
+    while true; do
+      sleep 60
+      curl -fsS -X POST -H Content-Type:application/json \
+        -H "X-Streamclip-Ingest-Secret: $HOOK" \
+        -d "{\"event\":\"tick\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\",\"processed_ms\":60000}" \
+        "$EVENT_URL" || true
+    done
+    TICK
+    sed -i 's/^    //' /usr/local/bin/streamclip-edge-tick
+    chmod +x /usr/local/bin/streamclip-edge-tick
+
     cat > /usr/local/bin/streamclip-edge-on-ready <<ONREADY
     #!/bin/bash
     mkdir -p /var/run/streamclip
     export HOOK='$HOOK' EVENT_URL='$EVENT_URL' RELAY_URL='$RELAY_URL'
     nohup /usr/local/bin/streamclip-edge-relay "\$1" >>/var/log/streamclip-relay.log 2>&1 &
+    nohup /usr/local/bin/streamclip-edge-tick "\$1" >>/var/log/streamclip-tick.log 2>&1 &
     ONREADY
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-on-ready
     chmod +x /usr/local/bin/streamclip-edge-on-ready
@@ -222,12 +244,14 @@ locals {
     #!/bin/bash
     PATH_NAME="\$1"
     SAFE=\$(echo "\$PATH_NAME" | tr '/:' '__')
-    PIDFILE="/var/run/streamclip/relay_\$SAFE.pid"
-    if [ -f "\$PIDFILE" ]; then
-      kill "\$(cat "\$PIDFILE")" 2>/dev/null || true
-      pkill -f "ffmpeg.*rtmp://127.0.0.1/\$PATH_NAME" 2>/dev/null || true
-      rm -f "\$PIDFILE"
-    fi
+    for KIND in relay tick; do
+      PIDFILE="/var/run/streamclip/$${KIND}_\$SAFE.pid"
+      if [ -f "\$PIDFILE" ]; then
+        kill "\$(cat "\$PIDFILE")" 2>/dev/null || true
+        rm -f "\$PIDFILE"
+      fi
+    done
+    pkill -f "ffmpeg.*(rtmp|rtsp).*\$PATH_NAME" 2>/dev/null || true
     curl -fsS -X POST -H Content-Type:application/json \
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
       -d "{\"event\":\"publisher_disconnect\",\"path\":\"\$PATH_NAME\",\"protocol\":\"rtmp\"}" \
@@ -244,7 +268,8 @@ locals {
     srtAddress: :8890
     webrtc: no
     hls: no
-    rtsp: no
+    rtsp: yes
+    rtspAddress: :8554
     authMethod: http
     authHTTPAddress: $${AUTH_URL}?ingest_secret=$${HOOK}
     pathDefaults:
