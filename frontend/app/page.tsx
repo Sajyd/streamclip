@@ -169,7 +169,7 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
             <ClipIllustration />
           </div>
 
-          <div className="relative mx-auto w-full max-w-6xl px-4 pb-16 sm:px-6 lg:pb-20">
+          <div className="relative mx-auto w-full max-w-6xl px-4 pb-20 sm:px-6 lg:pb-28">
             <ConceptFlow />
           </div>
         </section>
