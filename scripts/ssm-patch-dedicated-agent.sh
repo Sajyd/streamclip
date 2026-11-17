@@ -34,19 +34,22 @@ chmod +x /usr/local/bin/streamclip-analysis-agent.py
 
 cat > /usr/local/bin/streamclip-segment-loop <<'AGENT'
 #!/bin/bash
-set -eo pipefail
+# Never `set -e`: a failed segment must not kill the loop or the live.
+set -uo pipefail
 PATH_NAME="$1"
 SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
 PIDFILE="/var/run/streamclip/seg_${SAFE}.pid"
 SEQFILE="/var/run/streamclip/seg_${SAFE}.seq"
+LOG="/var/log/streamclip-segment.log"
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 0
 fi
 echo $$ > "$PIDFILE"
 SEQ=0
-[ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE")
+[ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE" 2>/dev/null || echo 0)
 trap 'rm -f "$PIDFILE"' EXIT
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
+FAILS=0
 while true; do
   OUT="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").mp4"
   rm -f "$OUT"
@@ -54,24 +57,40 @@ while true; do
       -use_wallclock_as_timestamps 1 \
       -i "rtsp://127.0.0.1:8554/${PATH_NAME}" \
       -t 300 -c copy -f mp4 -movflags +faststart "$OUT"; then
+    FAILS=$((FAILS + 1))
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_fail path=$PATH_NAME seq=$SEQ fails=$FAILS" >>"$LOG" || true
+    if [ "$FAILS" -ge 3 ]; then
+      SEQ=$((SEQ + 1))
+      echo "$SEQ" > "$SEQFILE" || true
+      FAILS=0
+    fi
     sleep 2
     continue
   fi
   if [ ! -s "$OUT" ]; then
+    FAILS=$((FAILS + 1))
+    if [ "$FAILS" -ge 3 ]; then
+      SEQ=$((SEQ + 1))
+      echo "$SEQ" > "$SEQFILE" || true
+      FAILS=0
+    fi
     sleep 1
     continue
   fi
+  FAILS=0
   KEY="tmp/lives/${SAFE}/seg_$(printf %04d "$SEQ").mp4"
-  SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT")
-  if [ -n "${S3_BUCKET:-}" ]; then
+  SIZE=$(stat -c%s "$OUT" 2>/dev/null || stat -f%z "$OUT" 2>/dev/null || echo 0)
+  if [ -n "${S3_BUCKET:-}" ] && [ "$SIZE" -gt 0 ]; then
     aws s3 cp "$OUT" "s3://${S3_BUCKET}/${KEY}" --region "$AWS_REGION" || true
   fi
-  curl -fsS -X POST -H "Content-Type: application/json" \
-    -H "X-Streamclip-Ingest-Secret: $HOOK" \
-    -d "{\"event\":\"segment\",\"path\":\"${PATH_NAME}\",\"protocol\":\"rtmp\",\"storage_key\":\"${KEY}\",\"sequence\":${SEQ},\"size_bytes\":${SIZE},\"processed_ms\":300000}" \
-    "$EVENT_URL" || true
+  if [ "$SIZE" -gt 0 ]; then
+    curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
+      -H "X-Streamclip-Ingest-Secret: $HOOK" \
+      -d "{\"event\":\"segment\",\"path\":\"${PATH_NAME}\",\"protocol\":\"rtmp\",\"storage_key\":\"${KEY}\",\"sequence\":${SEQ},\"size_bytes\":${SIZE},\"processed_ms\":300000}" \
+      "$EVENT_URL" || true
+  fi
   SEQ=$((SEQ + 1))
-  echo "$SEQ" > "$SEQFILE"
+  echo "$SEQ" > "$SEQFILE" || true
   rm -f "$OUT"
 done
 AGENT

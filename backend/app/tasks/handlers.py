@@ -177,9 +177,12 @@ async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
     """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent.
 
     Quota: −5 minutes only after a successful analysis (not on upload / ticks).
+    Failures retry/dead the task only — they must never close or interrupt the live.
+    The ingest agent advances to the next segment independently of this outcome.
     """
     from app.models.media import StreamSession
     from app.services import ingest as ingest_service
+    from app.services.media_ffmpeg import FFmpegError
     from app.services.segment_pipeline import WINDOW_MS, analyze_uploaded_segment
 
     session_id = _uuid(task, "stream_session_id")
@@ -197,15 +200,25 @@ async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
             raise PermanentTaskError("stream session missing")
         # A soft publisher flap must not block billing for an uploaded segment.
         await ingest_service.resume_session(session, stream)
-        await analyze_uploaded_segment(
-            session,
-            settings=ctx.settings,
-            storage=ctx.storage,
-            stream=stream,
-            sequence=sequence,
-            storage_key=storage_key,
-            size_bytes=size_bytes,
-        )
+        try:
+            await analyze_uploaded_segment(
+                session,
+                settings=ctx.settings,
+                storage=ctx.storage,
+                stream=stream,
+                sequence=sequence,
+                storage_key=storage_key,
+                size_bytes=size_bytes,
+            )
+        except FFmpegError as exc:
+            # Leave the live open; queue retries / parks the task. Next segments proceed.
+            log.warning(
+                "analysis_segment_ffmpeg_failed",
+                stream_id=str(stream.id),
+                sequence=sequence,
+                error=str(exc),
+            )
+            raise
         # Charge exactly one 5-min window once analysis persisted.
         already = stream.processed_ms or 0
         target = (sequence + 1) * WINDOW_MS

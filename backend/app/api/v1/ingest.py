@@ -765,14 +765,19 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             time_budget_seconds=20.0,
         )
     if queued_segment:
+        # Best-effort kick only — never hold the ingest agent on analysis.
+        # A failed/slow segment must not block the next 5-min window.
         from app.tasks.queue import run_due_tasks
 
-        await run_due_tasks(
-            ctx,
-            worker=f"segment-{getattr(request.state, 'request_id', 'hook')}",
-            queues=["analysis"],
-            kinds=["analysis.segment"],
-            max_tasks=1,
-            time_budget_seconds=55.0,
-        )
+        try:
+            await run_due_tasks(
+                ctx,
+                worker=f"segment-{getattr(request.state, 'request_id', 'hook')}",
+                queues=["analysis"],
+                kinds=["analysis.segment"],
+                max_tasks=1,
+                time_budget_seconds=8.0,
+            )
+        except Exception:  # noqa: BLE001 — ack already committed; drain cron retries
+            pass
     return Message(message="ok")

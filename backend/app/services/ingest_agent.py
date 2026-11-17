@@ -220,6 +220,18 @@ def _buffer_stats() -> dict:
     }
 
 
+def _spawn_loop(clean: str) -> subprocess.Popen:
+    env = os.environ.copy()
+    log_fh = open("/var/log/streamclip-segment.log", "a")  # noqa: SIM115 — kept for child lifetime
+    return subprocess.Popen(
+        ["/usr/local/bin/streamclip-segment-loop", clean],
+        env=env,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
 def start_path(path: str) -> dict:
     clean = _sanitize_path(path)
     if clean is None:
@@ -229,18 +241,27 @@ def start_path(path: str) -> dict:
         proc = _loops.get(clean)
         if proc is not None and proc.poll() is None:
             return {"ok": True, "path": _public_path_label(clean), "status": "already_running"}
-        env = os.environ.copy()
-        log_fh = open("/var/log/streamclip-segment.log", "a")
-        proc = subprocess.Popen(
-            ["/usr/local/bin/streamclip-segment-loop", clean],
-            env=env,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        proc = _spawn_loop(clean)
         _loops[clean] = proc
         _log(f"start path={_public_path_label(clean)} pid={proc.pid}")
         return {"ok": True, "path": _public_path_label(clean), "status": "started"}
+
+
+def _respawn_dead_loops() -> int:
+    """If a segment loop exited on error, restart it — never tear down the live."""
+    restarted = 0
+    with _lock:
+        for path, proc in list(_loops.items()):
+            if proc.poll() is None:
+                continue
+            fresh = _spawn_loop(path)
+            _loops[path] = fresh
+            restarted += 1
+            _log(
+                f"respawn path={_public_path_label(path)} "
+                f"old_exit={proc.returncode} new_pid={fresh.pid}"
+            )
+    return restarted
 
 
 def stop_path(path: str) -> dict:
@@ -275,6 +296,7 @@ def stop_path(path: str) -> dict:
 
 
 def health() -> dict:
+    restarted = _respawn_dead_loops()
     with _lock:
         active = sum(1 for proc in _loops.values() if proc.poll() is None)
     return {
@@ -284,6 +306,7 @@ def health() -> dict:
         "uptime_s": int(time.time() - _started_at),
         "rtmp_port": 1935,
         "active_buffers": active,
+        "respawned": restarted,
         "storage_configured": bool(os.environ.get("S3_BUCKET")),
         "ffmpeg": bool(shutil.which("ffmpeg") or Path("/usr/local/bin/ffmpeg").is_file()),
     }
