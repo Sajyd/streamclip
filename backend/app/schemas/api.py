@@ -470,18 +470,29 @@ class StreamSessionList(ApiModel):
 
 
 class IngestAuthHookRequest(ApiModel):
-    """MediaMTX auth webhook payload (subset we rely on)."""
+    """MediaMTX auth webhook payload (subset we rely on).
+
+    MediaMTX also sends token / id / userAgent — ignore unknowns so upgrades
+    do not 422 and leave OBS stuck on « connecting ».
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     action: Annotated[str, Field(max_length=32)] = "publish"
     path: Annotated[str, Field(max_length=255)] = ""
     protocol: Annotated[str, Field(max_length=32)] = "rtmp"
     ip: Annotated[str | None, Field(max_length=64)] = None
-    user: Annotated[str | None, Field(max_length=128)] = None
-    password: Annotated[str | None, Field(max_length=256)] = None
-    query: Annotated[str | None, Field(max_length=512)] = None
+    user: Annotated[str | None, Field(max_length=256)] = None
+    password: Annotated[str | None, Field(max_length=512)] = None
+    query: Annotated[str | None, Field(max_length=1024)] = None
+    token: Annotated[str | None, Field(max_length=2048)] = None
+    id: Annotated[str | None, Field(max_length=128)] = None
+    userAgent: Annotated[str | None, Field(max_length=512)] = None
 
 
 class IngestEventHookRequest(ApiModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
     event: Annotated[str, Field(max_length=64)]
     path: Annotated[str, Field(max_length=255)] = ""
     protocol: Annotated[str, Field(max_length=32)] = "rtmp"

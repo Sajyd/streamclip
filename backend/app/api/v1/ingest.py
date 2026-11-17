@@ -126,9 +126,9 @@ def _require_hook_secret(request: Request, ctx: Ctx) -> None:
 def _public_id_from_path(path: str) -> str | None:
     # Expected: live/{public_id} or live/{public_id}/{secret} (OBS stream key in path)
     parts = [p for p in path.strip("/").split("/") if p]
-    if len(parts) >= 2 and parts[0] == "live":
+    if len(parts) >= 2 and parts[0] == "live" and parts[1] != "live":
         return parts[1]
-    if len(parts) == 1:
+    if len(parts) == 1 and parts[0] not in ("live", "all_others"):
         return parts[0]
     return None
 
@@ -137,21 +137,43 @@ def _secret_from_path(path: str) -> str | None:
     parts = [p for p in path.strip("/").split("/") if p]
     if len(parts) >= 3 and parts[0] == "live" and parts[2].startswith("sc_live_"):
         return parts[2]
+    if len(parts) >= 2 and parts[1].startswith("sc_live_"):
+        return parts[1]
     return None
 
 
 def _secret_from_hook(body: IngestAuthHookRequest) -> str | None:
-    if body.password:
-        return body.password
+    # Password / user may be the bare secret or the full OBS key public_id/sc_live_…
+    for raw in (body.password, body.user):
+        if not raw:
+            continue
+        parsed = ingest_service.parse_obs_key(raw)
+        if parsed:
+            return parsed[1]
+        if raw.startswith("sc_live_"):
+            return raw
+        return raw
     embedded = _secret_from_path(body.path)
     if embedded:
         return embedded
     if body.query:
         values = parse_qs(body.query.lstrip("?"))
-        for key in ("pwd", "password", "secret"):
+        for key in ("pwd", "password", "secret", "key"):
             if values.get(key):
-                return values[key][0]
+                candidate = values[key][0]
+                parsed = ingest_service.parse_obs_key(candidate)
+                return parsed[1] if parsed else candidate
     return None
+
+
+def _public_id_from_hook(body: IngestAuthHookRequest) -> str | None:
+    for raw in (body.password, body.user):
+        if not raw:
+            continue
+        parsed = ingest_service.parse_obs_key(raw)
+        if parsed:
+            return parsed[0]
+    return _public_id_from_path(body.path)
 
 
 @router.get("/ingest/key", response_model=StreamKeyOut)
@@ -370,9 +392,9 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
     """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
-        # Playback / read is not offered publicly.
+        # Playback / read / api probes are not offered; deny without 422 noise.
         raise PermissionDeniedError("Action non autorisée.", code="ingest_action_denied")
-    public_id = _public_id_from_path(body.path)
+    public_id = _public_id_from_hook(body)
     secret = _secret_from_hook(body)
     if public_id is None or secret is None:
         raise PermissionDeniedError("Clé d'ingestion invalide.", code="invalid_stream_key")
