@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Remotion captions (ViralHighlight) — place the file in public/fonts/. */
+@font-face {
+  font-family: "Komika Axis";
+  src:
+    local("Komika Axis"),
+    local("KomikaAxis"),
+    url("/fonts/KomikaAxis.ttf") format("truetype"),
+    url("/fonts/KomikaAxis.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   /* Near-black surfaces with navy undertone from the brand palette. */
   --color-ink-950: #010014;

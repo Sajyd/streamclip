@@ -7,9 +7,15 @@ import type { Highlight } from "@/types/api";
 type Props = {
   highlights: Highlight[];
   mediaUrlAction: (id: string) => Promise<{ url?: string; error?: string }>;
+  /** Free plan → Remotion watermark. */
+  showWatermark?: boolean;
 };
 
-export function HighlightsGallery({ highlights, mediaUrlAction }: Props) {
+export function HighlightsGallery({
+  highlights,
+  mediaUrlAction,
+  showWatermark = false,
+}: Props) {
   if (highlights.length === 0) {
     return (
       <Card>
@@ -25,7 +31,12 @@ export function HighlightsGallery({ highlights, mediaUrlAction }: Props) {
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       {highlights.map((h) => (
-        <HighlightPlayer key={h.id} highlight={h} mediaUrlAction={mediaUrlAction} />
+        <HighlightPlayer
+          key={h.id}
+          highlight={h}
+          mediaUrlAction={mediaUrlAction}
+          showWatermark={showWatermark}
+        />
       ))}
     </div>
   );

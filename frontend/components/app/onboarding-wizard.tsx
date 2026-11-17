@@ -9,11 +9,7 @@ import {
   saveOnboardingAction,
   type OnboardingPatch,
 } from "@/app/actions/onboarding";
-import {
-  CopyField,
-  OnboardingCredsBanner,
-  StreamKeyManager,
-} from "@/components/app/ingest-credentials";
+import { CopyField, StreamKeyManager } from "@/components/app/ingest-credentials";
 import { LiveDetector } from "@/components/app/live-detector";
 import {
   PluginConnectStep,
@@ -103,15 +99,6 @@ const SOCIALS = [
   { id: "tiktok" as const, label: "TikTok" },
   { id: "instagram" as const, label: "Instagram" },
 ];
-
-const SETUP_STEPS = new Set<StepId>([
-  "plugin-ask",
-  "plugin-download",
-  "plugin-install",
-  "plugin-verify",
-  "plugin-connect",
-  "streamlabs-setup",
-]);
 
 function Progress({ step, steps }: { step: StepId; steps: StepId[] }) {
   const index = Math.max(0, steps.indexOf(step));
@@ -369,15 +356,10 @@ export function OnboardingWizard({
   const highlighted =
     plans.find((plan) => plan.code === "creator") ?? plans.find((p) => p.price_cents > 0);
   const freePlan = plans.find((plan) => plan.price_cents === 0);
-  const showCreds = SETUP_STEPS.has(step) || step === "ingest-key";
 
   return (
     <div className="animate-fade-up">
       <Progress step={step} steps={steps} />
-
-      {showCreds && creds ? (
-        <OnboardingCredsBanner server={creds.server} streamKey={creds.streamKey} />
-      ) : null}
 
       {step === "welcome" ? (
         <Card className="relative overflow-hidden">

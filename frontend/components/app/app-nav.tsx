@@ -9,6 +9,8 @@ const LINKS = [
   { href: "/dashboard", label: "Tableau de bord" },
   { href: "/highlights", label: "Highlights" },
   { href: "/clips", label: "Clips" },
+  { href: "/calendar", label: "Calendrier" },
+  { href: "/guide", label: "Guide" },
   { href: "/billing", label: "Abonnement" },
   { href: "/settings", label: "Paramètres" },
 ];

@@ -60,6 +60,9 @@ async function Dashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ButtonLink href="/guide" variant="secondary" size="sm">
+            Guide OBS / Streamlabs
+          </ButtonLink>
           <ButtonLink href="/clips" variant="secondary" size="sm">
             Voir les clips
           </ButtonLink>

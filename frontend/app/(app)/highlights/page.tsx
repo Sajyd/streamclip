@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { highlightMediaUrlAction } from "@/app/actions/highlights";
 import { HighlightsGallery } from "@/components/app/highlights-gallery";
 import { Skeleton } from "@/components/ui/primitives";
-import { getHighlights, requireSession } from "@/lib/dal";
+import { getBillingOverview, getHighlights, requireSession } from "@/lib/dal";
 
 export const metadata: Metadata = { title: "Highlights" };
 
@@ -12,8 +12,17 @@ const PATH = "/highlights";
 
 async function HighlightsContent() {
   const { token } = await requireSession(PATH);
-  const highlights = await getHighlights(token, PATH);
-  return <HighlightsGallery highlights={highlights} mediaUrlAction={highlightMediaUrlAction} />;
+  const [highlights, overview] = await Promise.all([
+    getHighlights(token, PATH),
+    getBillingOverview(token, PATH),
+  ]);
+  return (
+    <HighlightsGallery
+      highlights={highlights}
+      mediaUrlAction={highlightMediaUrlAction}
+      showWatermark={!overview.is_paid}
+    />
+  );
 }
 
 export default function HighlightsPage() {

@@ -252,22 +252,3 @@ export function StreamKeyManager({
   );
 }
 
-/** Sticky reminder of RTMP server + clear secret during onboarding only. */
-export function OnboardingCredsBanner({
-  server,
-  streamKey,
-}: {
-  server: string | null;
-  streamKey: string | null;
-}) {
-  if (!server && !streamKey) return null;
-  return (
-    <div className="mb-5 space-y-3 rounded-2xl border border-warn-400/35 bg-warn-400/10 p-4">
-      <p className="text-xs font-semibold tracking-wide text-warn-400 uppercase">
-        À coller dans OBS — disparaît à la fin de l’onboarding
-      </p>
-      {server ? <CopyField label="Serveur RTMP STREAMCLIP" value={server} /> : null}
-      {streamKey ? <CopyField label="Clé secrète" value={streamKey} /> : null}
-    </div>
-  );
-}

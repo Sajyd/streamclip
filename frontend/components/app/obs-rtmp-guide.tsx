@@ -34,20 +34,26 @@ type PluginOs = keyof typeof PLUGIN_DOWNLOADS;
 
 export type Creds = { server: string; streamKey: string };
 
-function CredsCard({ creds }: { creds: Creds | null }) {
+function CredsCard({
+  creds,
+  emptyHint = "Créez ou régénérez votre clé STREAMCLIP pour afficher le serveur et la clé à coller.",
+}: {
+  creds: Creds | null;
+  emptyHint?: string;
+}) {
   if (!creds) {
     return (
       <p className="rounded-2xl border border-danger-500/30 bg-danger-500/10 px-4 py-3 text-sm text-danger-400">
-        Pas de clé visible. Revenez à l’étape « Clé » et créez ou régénérez-la.
+        {emptyHint}
       </p>
     );
   }
   return (
     <div className="space-y-3 rounded-2xl border border-warn-400/35 bg-warn-400/10 p-4">
       <p className="text-xs font-semibold tracking-wide text-warn-400 uppercase">
-        À coller — disparaît à la fin de l’onboarding
+        À coller dans votre logiciel de diffusion
       </p>
-      <CopyField label="Serveur RTMP" value={creds.server} />
+      <CopyField label="Serveur" value={creds.server} />
       <CopyField label="Clé secrète" value={creds.streamKey} />
     </div>
   );

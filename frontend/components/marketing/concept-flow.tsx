@@ -6,7 +6,7 @@ const EASE = [0.22, 1, 0.36, 1] as const;
 
 function ObsGlyph() {
   return (
-    <svg viewBox="0 0 72 56" className="h-14 w-[4.5rem]" aria-hidden>
+    <svg viewBox="0 0 72 56" className="h-9 w-12" aria-hidden>
       <rect x="2" y="2" width="68" height="42" rx="6" fill="#030025" stroke="rgba(107,130,255,0.55)" strokeWidth="1.5" />
       <rect x="8" y="8" width="40" height="24" rx="3" fill="#0013de" opacity="0.35" />
       <circle cx="18" cy="18" r="5" fill="#6b82ff" opacity="0.9" />
@@ -22,7 +22,7 @@ function ObsGlyph() {
 
 function StreamclipGlyph({ pulse = false }: { pulse?: boolean } = {}) {
   return (
-    <svg viewBox="0 0 72 72" className="size-16" aria-hidden>
+    <svg viewBox="0 0 72 72" className="size-11" aria-hidden>
       <circle cx="36" cy="36" r="30" fill="#0013de" opacity="0.18" />
       <circle cx="36" cy="36" r="22" fill="none" stroke="rgba(107,130,255,0.55)" strokeWidth="1.5" />
       <motion.circle
@@ -54,7 +54,7 @@ function StreamclipGlyph({ pulse = false }: { pulse?: boolean } = {}) {
 
 function ClipGlyph() {
   return (
-    <svg viewBox="0 0 44 72" className="h-16 w-10" aria-hidden>
+    <svg viewBox="0 0 44 72" className="h-11 w-7" aria-hidden>
       <rect x="2" y="2" width="40" height="68" rx="8" fill="#030025" stroke="rgba(107,130,255,0.55)" strokeWidth="1.5" />
       <rect x="7" y="10" width="30" height="44" rx="3" fill="#0013de" opacity="0.4" />
       <rect x="10" y="42" width="24" height="3" rx="1" fill="rgba(238,240,250,0.85)" />
@@ -67,7 +67,7 @@ function ClipGlyph() {
 
 function SocialGlyph() {
   return (
-    <svg viewBox="0 0 88 56" className="h-12 w-[5.5rem]" aria-hidden>
+    <svg viewBox="0 0 88 56" className="h-8 w-14" aria-hidden>
       <rect x="2" y="10" width="24" height="36" rx="6" fill="#0013de" opacity="0.55" />
       <rect x="32" y="4" width="24" height="48" rx="6" fill="#0021f3" opacity="0.7" />
       <rect x="62" y="10" width="24" height="36" rx="6" fill="#3358ff" opacity="0.5" />
@@ -116,10 +116,6 @@ const STAGES = [
   },
 ] as const;
 
-/** Desktop path through the four stages (viewBox 1000×280). */
-const FLOW_PATH =
-  "M 80 140 C 180 140, 220 140, 280 140 S 420 60, 500 140 S 620 220, 720 140 S 820 140, 920 140";
-
 export function ConceptFlow() {
   const reduceMotion = useReducedMotion();
   const animate = !reduceMotion;
@@ -139,148 +135,21 @@ export function ConceptFlow() {
         </p>
       </div>
 
-      <div className="relative mt-10 min-h-[28rem] overflow-hidden rounded-[2rem] border border-white/10 bg-ink-950/80 sm:mt-12 sm:min-h-[32rem] lg:min-h-[34rem]">
+      <div className="relative mx-auto mt-10 max-w-3xl overflow-hidden rounded-[2rem] border border-white/10 bg-ink-950/80 sm:mt-12">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_30%_20%,rgba(0,19,222,0.28),transparent_55%),radial-gradient(ellipse_at_80%_70%,rgba(51,88,255,0.16),transparent_50%)]"
         />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 opacity-[0.35]"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(107,130,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(107,130,255,0.08) 1px, transparent 1px)",
-            backgroundSize: "48px 48px",
-            maskImage: "radial-gradient(ellipse at center, black 35%, transparent 80%)",
-          }}
-        />
 
-        {/* Desktop schematic */}
-        <div className="relative hidden h-full min-h-[34rem] lg:block">
-          <svg
-            className="absolute inset-0 size-full"
-            viewBox="0 0 1000 280"
-            preserveAspectRatio="xMidYMid meet"
-            aria-hidden
-          >
-            <defs>
-              <linearGradient id="concept-flow-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#6b82ff" stopOpacity="0.15" />
-                <stop offset="50%" stopColor="#0021f3" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#9aabff" stopOpacity="0.35" />
-              </linearGradient>
-              <filter id="concept-glow" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="4" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-
-            <motion.path
-              d={FLOW_PATH}
-              fill="none"
-              stroke="url(#concept-flow-stroke)"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              initial={animate ? { pathLength: 0, opacity: 0 } : { pathLength: 1, opacity: 1 }}
-              whileInView={{ pathLength: 1, opacity: 1 }}
-              viewport={{ once: true, amount: 0.4 }}
-              transition={{ duration: 2.4, ease: EASE, delay: 0.35 }}
-            />
-
-            {animate
-              ? [0, 1, 2].map((i) => (
-                  <motion.circle
-                    key={i}
-                    r="5"
-                    fill="#9aabff"
-                    filter="url(#concept-glow)"
-                    initial={{ opacity: 0 }}
-                    whileInView={{ opacity: [0, 1, 1, 0] }}
-                    viewport={{ once: true, amount: 0.4 }}
-                    transition={{
-                      duration: 5.5,
-                      delay: 1.1 + i * 1.4,
-                      ease: "linear",
-                      times: [0, 0.08, 0.9, 1],
-                    }}
-                  >
-                    <animateMotion
-                      dur="5.5s"
-                      begin={`${1.1 + i * 1.4}s`}
-                      fill="freeze"
-                      path={FLOW_PATH}
-                    />
-                  </motion.circle>
-                ))
-              : null}
-          </svg>
-
-          <ol className="absolute inset-0 grid grid-cols-4 px-4 py-14 xl:px-10">
-            {STAGES.map((stage, index) => {
-              const Glyph = stage.Glyph;
-              const isCenter = stage.id === "streamclip";
-              return (
-                <motion.li
-                  key={stage.id}
-                  className="relative flex flex-col items-center justify-center px-2 text-center"
-                  initial={animate ? { opacity: 0, y: 28 } : false}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true, amount: 0.35 }}
-                  transition={{ duration: 0.9, delay: 0.55 + index * 0.55, ease: EASE }}
-                >
-                  <div
-                    className={
-                      isCenter
-                        ? "relative flex size-32 items-center justify-center rounded-full border border-brand-400/40 bg-brand-500/15 shadow-[0_0_48px_-12px_rgba(0,33,243,0.75)] xl:size-36"
-                        : "relative flex size-28 items-center justify-center xl:size-32"
-                    }
-                  >
-                    {!isCenter ? (
-                      <span
-                        aria-hidden
-                        className="absolute inset-3 rounded-[1.75rem] border border-white/10 bg-ink-900/60"
-                      />
-                    ) : null}
-                    <span className="relative z-10">
-                      {stage.id === "streamclip" ? (
-                        <StreamclipGlyph pulse={Boolean(animate)} />
-                      ) : (
-                        <Glyph />
-                      )}
-                    </span>
-                    {animate && isCenter ? (
-                      <motion.span
-                        aria-hidden
-                        className="pointer-events-none absolute inset-0 rounded-full border border-brand-300/40"
-                        animate={{ scale: [1, 1.35], opacity: [0.55, 0] }}
-                        transition={{ duration: 3.6, repeat: Infinity, ease: "easeOut" }}
-                      />
-                    ) : null}
-                  </div>
-                  <p className="mt-5 font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/80">
-                    {String(index + 1).padStart(2, "0")}
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-white xl:text-lg">{stage.label}</p>
-                  <p className="mt-1 max-w-[13rem] text-sm text-ink-300">{stage.sub}</p>
-                </motion.li>
-              );
-            })}
-          </ol>
-        </div>
-
-        {/* Mobile / tablet schematic */}
-        <ol className="relative flex flex-col gap-0 px-6 py-10 sm:px-10 lg:hidden">
+        <ol className="relative flex flex-col px-6 py-10 sm:px-10 sm:py-12">
           {STAGES.map((stage, index) => {
             const Glyph = stage.Glyph;
             const last = index === STAGES.length - 1;
             return (
-              <li key={stage.id} className="relative flex gap-5">
-                <div className="flex w-16 shrink-0 flex-col items-center">
+              <li key={stage.id} className="relative flex gap-5 sm:gap-6">
+                <div className="flex w-14 shrink-0 flex-col items-center sm:w-16">
                   <motion.div
-                    className="relative z-10 flex size-16 items-center justify-center rounded-2xl border border-white/10 bg-ink-900/80"
+                    className="relative z-10 flex size-14 items-center justify-center rounded-2xl border border-white/10 bg-ink-900/80 sm:size-16"
                     initial={animate ? { opacity: 0, scale: 0.9 } : false}
                     whileInView={{ opacity: 1, scale: 1 }}
                     viewport={{ once: true, amount: 0.5 }}
@@ -299,13 +168,13 @@ export function ConceptFlow() {
                       initial={animate ? { scaleY: 0 } : false}
                       whileInView={{ scaleY: 1 }}
                       viewport={{ once: true }}
-                      style={{ originY: 0, minHeight: "3.5rem" }}
+                      style={{ originY: 0, minHeight: "3.25rem" }}
                       transition={{ duration: 0.9, delay: 0.35 + index * 0.45, ease: EASE }}
                     />
                   ) : null}
                 </div>
                 <motion.div
-                  className="min-w-0 flex-1 pb-10 pt-3"
+                  className={`min-w-0 flex-1 pt-2.5 ${last ? "pb-2" : "pb-10 sm:pb-12"}`}
                   initial={animate ? { opacity: 0, x: 16 } : false}
                   whileInView={{ opacity: 1, x: 0 }}
                   viewport={{ once: true, amount: 0.5 }}
@@ -314,8 +183,8 @@ export function ConceptFlow() {
                   <p className="font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/80">
                     {String(index + 1).padStart(2, "0")}
                   </p>
-                  <p className="mt-1 text-lg font-semibold text-white">{stage.label}</p>
-                  <p className="mt-1 text-sm text-ink-300">{stage.sub}</p>
+                  <p className="mt-1 text-lg font-semibold text-white sm:text-xl">{stage.label}</p>
+                  <p className="mt-1 text-sm text-ink-300 sm:text-base">{stage.sub}</p>
                   <p className="mt-2 text-sm leading-relaxed text-ink-400">{stage.detail}</p>
                 </motion.div>
               </li>
@@ -323,18 +192,6 @@ export function ConceptFlow() {
           })}
         </ol>
       </div>
-
-      {/* Detail row under the diagram (desktop) — technical bits live here */}
-      <ol className="mt-8 hidden gap-4 lg:grid lg:grid-cols-4">
-        {STAGES.map((stage, index) => (
-          <li key={stage.id} className="px-1">
-            <p className="font-mono text-[0.65rem] tracking-[0.18em] text-brand-300/70">
-              {String(index + 1).padStart(2, "0")} · {stage.label}
-            </p>
-            <p className="mt-2 text-sm leading-relaxed text-ink-300">{stage.detail}</p>
-          </li>
-        ))}
-      </ol>
     </div>
   );
 }

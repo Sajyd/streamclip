@@ -11,9 +11,11 @@ import { Badge, Card, CardDescription, CardTitle } from "@/components/ui/primiti
 type Props = {
   highlight: Highlight;
   mediaUrlAction: (id: string) => Promise<{ url?: string; error?: string }>;
+  /** Watermark on free plans only. */
+  showWatermark?: boolean;
 };
 
-export function HighlightPlayer({ highlight, mediaUrlAction }: Props) {
+export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = false }: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,6 +74,7 @@ export function HighlightPlayer({ highlight, mediaUrlAction }: Props) {
               words: highlight.words,
               camera: highlight.camera,
               title: highlight.title,
+              showWatermark,
             }}
             durationInFrames={durationInFrames}
             compositionWidth={COMPOSITION.width}
