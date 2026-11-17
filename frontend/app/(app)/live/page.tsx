@@ -19,7 +19,7 @@ async function LiveContent() {
   if (!me.capabilities.ingest_keys) {
     return (
       <p className="text-sm text-ink-300">
-        L&apos;ingestion live n&apos;est pas disponible sur cet environnement.
+        L&apos;aperçu live n&apos;est pas disponible sur cet environnement.
       </p>
     );
   }
@@ -53,12 +53,12 @@ export default function LivePage() {
             Suivi en direct
           </h1>
           <p className="mt-1.5 text-sm text-ink-300">
-            Visualisez votre flux RTMP et les moments forts détectés en temps réel.
+            Visualisez votre diffusion et les moments forts détectés en temps réel.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <ButtonLink href="/guide" variant="secondary" size="sm">
-            Guide OBS
+            Guide
           </ButtonLink>
           <ButtonLink href="/highlights" variant="secondary" size="sm">
             Highlights

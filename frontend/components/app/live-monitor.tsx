@@ -12,26 +12,27 @@ type Toast = { id: string; title: string; score: number };
 
 type Props = {
   initialPlayback: LivePlayback;
-  initialHighlights: Highlight[];
-  /** Same-origin HLS base without filename, e.g. `/live/stream`. */
+  initialHighlights?: Highlight[];
   hlsBase: string;
-  /** Polling helpers — server actions / BFF. */
   refreshPlayback: () => Promise<LivePlayback>;
-  refreshHighlights: (sessionId: string | null) => Promise<Highlight[]>;
-  timeZone: string;
-  compact?: boolean;
+  refreshHighlights?: (sessionId: string | null) => Promise<Highlight[]>;
+  timeZone?: string;
+  /** Player only — for dashboard grid cards. */
+  playerOnly?: boolean;
   showList?: boolean;
+  className?: string;
 };
 
 export function LiveMonitor({
   initialPlayback,
-  initialHighlights,
+  initialHighlights = [],
   hlsBase,
   refreshPlayback,
   refreshHighlights,
-  timeZone,
-  compact = false,
+  timeZone = "UTC",
+  playerOnly = false,
   showList = true,
+  className,
 }: Props) {
   const [playback, setPlayback] = useState(initialPlayback);
   const [highlights, setHighlights] = useState(initialHighlights);
@@ -58,6 +59,7 @@ export function LiveMonitor({
         const next = await refreshPlayback();
         if (cancelled) return;
         setPlayback(next);
+        if (!refreshHighlights || playerOnly) return;
         const list = await refreshHighlights(next.session_id);
         if (cancelled) return;
         setHighlights(list);
@@ -79,7 +81,7 @@ export function LiveMonitor({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshPlayback, refreshHighlights]);
+  }, [refreshPlayback, refreshHighlights, playerOnly]);
 
   const src =
     playback.preview_available && playback.status === "live"
@@ -90,12 +92,45 @@ export function LiveMonitor({
     ? highlights.filter((h) => h.stream_session_id === playback.session_id)
     : highlights;
 
+  const friendlyMessage =
+    playback.status === "live"
+      ? "Votre live est en cours."
+      : playback.status === "starting"
+        ? "Préparation de l'aperçu…"
+        : "Aucun live en cours pour le moment.";
+
+  if (playerOnly) {
+    return (
+      <Card className={cx("flex h-full flex-col p-5", className)}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
+            <CardTitle className="mt-2 text-lg">Aperçu</CardTitle>
+            <CardDescription>Votre diffusion en cours, en direct.</CardDescription>
+          </div>
+          <Link
+            href="/live"
+            className="shrink-0 text-xs font-medium text-brand-300 hover:text-brand-200"
+          >
+            Agrandir
+          </Link>
+        </div>
+        <LivePlayer src={src} status={playback.status} message={friendlyMessage} />
+      </Card>
+    );
+  }
+
   return (
-    <div className={cx("relative space-y-5", compact ? null : "lg:grid lg:grid-cols-[1.4fr_1fr] lg:gap-5 lg:space-y-0")}>
+    <div
+      className={cx(
+        "relative space-y-5 lg:grid lg:grid-cols-[1.4fr_1fr] lg:gap-5 lg:space-y-0",
+        className,
+      )}
+    >
       {toast ? (
         <div
           role="status"
-          className="fixed right-4 bottom-4 z-50 max-w-sm animate-[fadeIn_200ms_ease-out] rounded-2xl border border-brand-500/40 bg-ink-900/95 px-4 py-3 shadow-xl backdrop-blur"
+          className="fixed right-4 bottom-4 z-50 max-w-sm rounded-2xl border border-brand-500/40 bg-ink-900/95 px-4 py-3 shadow-xl backdrop-blur"
         >
           <p className="text-xs font-medium tracking-[0.14em] text-brand-300 uppercase">
             Moment fort détecté
@@ -111,27 +146,18 @@ export function LiveMonitor({
       ) : null}
 
       <div className="space-y-3">
-        {!compact ? (
-          <div>
-            <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
-            <CardTitle className="mt-2">Aperçu du flux RTMP</CardTitle>
-            <CardDescription>
-              Lecture HLS sécurisée via votre session — aucune clé secrète OBS n&apos;est requise.
-            </CardDescription>
-          </div>
-        ) : null}
-        <LivePlayer
-          src={src}
-          status={playback.status}
-          message={playback.message}
-          rtmpUrl={playback.rtmp_url}
-          publicId={playback.public_id}
-          compact={compact}
-        />
+        <div>
+          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Live</p>
+          <CardTitle className="mt-2">Aperçu en direct</CardTitle>
+          <CardDescription>
+            Suivez votre diffusion et les moments forts détectés automatiquement.
+          </CardDescription>
+        </div>
+        <LivePlayer src={src} status={playback.status} message={friendlyMessage} />
       </div>
 
       {showList ? (
-        <Card className={compact ? "p-4" : undefined}>
+        <Card>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">
@@ -146,7 +172,7 @@ export function LiveMonitor({
           </div>
           {sessionHighlights.length === 0 ? (
             <p className="mt-4 text-sm text-ink-400">
-              Les moments forts apparaîtront ici pendant le live (fenêtres d&apos;analyse ~5 min).
+              Les moments forts apparaîtront ici pendant votre live.
             </p>
           ) : (
             <ul className="mt-4 max-h-80 space-y-2 overflow-y-auto">

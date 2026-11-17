@@ -55,32 +55,42 @@ export function AdminLivePlayer({
       ? `/admin/lives/${liveId}/stream/index.m3u8`
       : null;
 
+  const host = playback.rtmp_url ?? rtmpUrl;
+  const publicId = playback.public_id ?? streamKeyPublicId;
+
   return (
     <Card className="space-y-4 p-5">
       <div>
         <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Aperçu live</p>
         <CardTitle className="mt-2">Lecteur du live</CardTitle>
         <CardDescription>
-          Prévisualisation HLS de l&apos;instance dédiée — authentifiée par votre session staff,
-          sans clé secrète OBS.
-          {streamKeyPublicId ? (
+          Prévisualisation via session staff
+          {publicId ? (
             <>
               {" "}
-              Flux <span className="font-mono text-ink-200">{streamKeyPublicId}</span>
+              · flux <span className="font-mono text-ink-200">{publicId}</span>
               {streamKeyHint ? (
                 <span className="font-mono text-ink-500"> (…{streamKeyHint})</span>
               ) : null}
-              .
             </>
           ) : null}
+          {host ? (
+            <>
+              {" "}
+              · <span className="font-mono text-ink-400">{host}</span>
+            </>
+          ) : null}
+          .
         </CardDescription>
       </div>
       <LivePlayer
         src={src}
         status={playback.status}
-        message={playback.message}
-        rtmpUrl={playback.rtmp_url ?? rtmpUrl}
-        publicId={playback.public_id ?? streamKeyPublicId}
+        message={
+          playback.status === "live"
+            ? "Live en cours."
+            : playback.message || "Aucun live en cours."
+        }
       />
     </Card>
   );
