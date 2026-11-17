@@ -154,44 +154,7 @@ fi
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
   AUTH_LINE=$(grep -E '^authHTTPAddress:' /etc/mediamtx/mediamtx.yml | head -1 || true)
   [ -n "${AUTH_LINE:-}" ] || AUTH_LINE='authHTTPAddress: http://127.0.0.1/'
-  python3 - "$AUTH_LINE" <<'PY'
-from pathlib import Path
-import sys
-auth = sys.argv[1]
-Path("/etc/mediamtx/mediamtx.yml").write_text(
-    f"""logLevel: info
-writeQueueSize: 8192
-readTimeout: 60s
-writeTimeout: 60s
-rtmp: yes
-rtmpAddress: :1935
-srt: yes
-srtAddress: :8890
-webrtc: no
-hls: yes
-hlsAddress: 127.0.0.1:8888
-hlsAlwaysRemux: yes
-hlsSegmentCount: 7
-hlsSegmentDuration: 1s
-rtsp: yes
-rtspAddress: :8554
-authMethod: http
-{auth}
-pathDefaults:
-  record: yes
-  recordPath: /var/lib/streamclip/segments/%path/%Y-%m-%d_%H-%M-%S-%f
-  recordFormat: fmp4
-  recordPartDuration: 1s
-  recordSegmentDuration: 5m
-  recordDeleteAfter: 2h
-  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH
-  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH
-  runOnRecordSegmentComplete: /usr/local/bin/streamclip-on-record-complete $MTX_PATH $MTX_SEGMENT_PATH
-paths:
-  all_others:
-"""
-)
-PY
+  python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\nwriteQueueSize: 8192\nreadTimeout: 60s\nwriteTimeout: 60s\nrtmp: yes\nrtmpAddress: :1935\nsrt: yes\nsrtAddress: :8890\nwebrtc: no\nhls: yes\nhlsAddress: 127.0.0.1:8888\nhlsAlwaysRemux: yes\nhlsSegmentCount: 7\nhlsSegmentDuration: 1s\nrtsp: yes\nrtspAddress: :8554\nauthMethod: http\n"+auth+"\npathDefaults:\n  record: yes\n  recordPath: /var/lib/streamclip/segments/%path/%Y-%m-%d_%H-%M-%S-%f\n  recordFormat: fmp4\n  recordPartDuration: 1s\n  recordSegmentDuration: 5m\n  recordDeleteAfter: 2h\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\n  runOnRecordSegmentComplete: /usr/local/bin/streamclip-on-record-complete $MTX_PATH $MTX_SEGMENT_PATH\npaths:\n  all_others:\n")' "$AUTH_LINE"
   systemctl restart mediamtx || true
 fi
 
