@@ -302,6 +302,53 @@ async def open_session_for_publish(
     return stream
 
 
+async def interrupt_session(
+    session: AsyncSession,
+    stream: StreamSession,
+    *,
+    reason: StreamEndReason = StreamEndReason.PUBLISHER_ENDED,
+) -> StreamSession:
+    """Mark a brief publisher drop without completing the live.
+
+    MediaMTX can fire runOnNotReady on encoder stalls / RTMP flaps while OBS
+    is still live and the dedicated agent stays up. Keep the session open so
+    the next publisher_ready / segment can resume billing & analysis.
+    """
+    if stream.status not in OPEN_SESSION_STATUSES:
+        return stream
+    now = datetime.now(UTC)
+    stream.status = StreamSessionStatus.INTERRUPTED
+    stream.end_reason = None
+    stream.ended_at = None
+    stream.error_code = None
+    stream.error_message = None
+    connections = (
+        await session.execute(
+            select(StreamConnection).where(
+                StreamConnection.stream_session_id == stream.id,
+                StreamConnection.status == ConnectionStatus.ACTIVE,
+            )
+        )
+    ).scalars()
+    for connection in connections:
+        connection.status = ConnectionStatus.CLOSED
+        connection.disconnected_at = now
+        connection.disconnect_reason = reason.value
+    await session.flush()
+    return stream
+
+
+async def resume_session(session: AsyncSession, stream: StreamSession) -> StreamSession:
+    """Re-open an interrupted live when the publisher or a segment returns."""
+    if stream.status is StreamSessionStatus.INTERRUPTED:
+        stream.status = StreamSessionStatus.LIVE
+        stream.end_reason = None
+        stream.ended_at = None
+        stream.last_media_at = datetime.now(UTC)
+        await session.flush()
+    return stream
+
+
 async def close_session(
     session: AsyncSession,
     stream: StreamSession,

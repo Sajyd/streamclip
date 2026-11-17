@@ -232,7 +232,8 @@ async def test_mediamtx_auth_opens_session_and_disconnect_closes(
     )
     assert end.status_code == 200
     sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
-    assert sessions[0]["status"] == "completed"
+    # Soft interrupt — finalize only after grace (ingest.finalize_interrupted).
+    assert sessions[0]["status"] == "interrupted"
     # Ticks do not bill — processed_ms stays 0 until a segment is analyzed.
     assert sessions[0]["processed_ms"] == 0
 

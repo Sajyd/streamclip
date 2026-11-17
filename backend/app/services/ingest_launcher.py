@@ -223,14 +223,21 @@ logLevel: info
 # 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC / segment ffmpeg).
 # Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
 writeQueueSize: 2048
-readTimeout: 15s
-writeTimeout: 15s
+# OBS / encoder stalls longer than 15s used to drop the publisher and fire
+# runOnNotReady while the agent stayed up — keep the RTMP path alive.
+readTimeout: 60s
+writeTimeout: 60s
 rtmp: yes
 rtmpAddress: :1935
 srt: yes
 srtAddress: :8890
 webrtc: no
-hls: no
+# Local-only HLS for dashboard/admin preview (proxied by the agent on :8080).
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsAlwaysRemux: yes
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
 rtsp: yes
 rtspAddress: :8554
 authMethod: http

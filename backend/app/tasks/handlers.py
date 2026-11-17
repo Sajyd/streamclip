@@ -149,6 +149,29 @@ async def ensure_dedicated_ingest_node(ctx: AppContext, task: ClaimedTask) -> No
         )
 
 
+@task_handler("ingest.finalize_interrupted")
+async def finalize_interrupted_live(ctx: AppContext, task: ClaimedTask) -> None:
+    """Complete a soft-interrupted live only if it never resumed."""
+    from app.models.enums import StreamEndReason, StreamSessionStatus
+    from app.models.media import StreamSession
+    from app.services import ingest as ingest_service
+    from app.services import ingest_nodes
+
+    session_id = _uuid(task, "stream_session_id")
+    async with ctx.db.system_tx() as session:
+        stream = await session.get(StreamSession, session_id)
+        if stream is None:
+            return
+        if stream.status is not StreamSessionStatus.INTERRUPTED:
+            return
+        await ingest_service.close_session(
+            session, stream, reason=StreamEndReason.PUBLISHER_ENDED
+        )
+        await ingest_nodes.schedule_idle_termination(
+            session, organization_id=stream.organization_id
+        )
+
+
 @task_handler("analysis.segment")
 async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
     """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent.
@@ -172,6 +195,8 @@ async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
         stream = await session.get(StreamSession, session_id)
         if stream is None:
             raise PermanentTaskError("stream session missing")
+        # A soft publisher flap must not block billing for an uploaded segment.
+        await ingest_service.resume_session(session, stream)
         await analyze_uploaded_segment(
             session,
             settings=ctx.settings,

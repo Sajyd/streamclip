@@ -128,12 +128,33 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 UNIT
+# Keep RTMP publishers across brief encoder stalls (was 15s → false disconnect).
+if [ -f /etc/mediamtx/mediamtx.yml ]; then
+  sed -i 's/^readTimeout:.*/readTimeout: 60s/' /etc/mediamtx/mediamtx.yml || true
+  sed -i 's/^writeTimeout:.*/writeTimeout: 60s/' /etc/mediamtx/mediamtx.yml || true
+  systemctl restart mediamtx || true
+fi
+# Ensure static ffmpeg is on PATH (AL2023 has no distro package).
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  FFDIR=$(mktemp -d)
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    aarch64|arm64) FFARCH=arm64 ;;
+    *) FFARCH=amd64 ;;
+  esac
+  curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FFARCH}-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"
+  tar -xJf "$FFDIR/ffmpeg.tar.xz" -C "$FFDIR"
+  install -m 755 "$FFDIR"/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg
+  install -m 755 "$FFDIR"/ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe || true
+  rm -rf "$FFDIR"
+fi
 systemctl daemon-reload
 systemctl enable --now streamclip-agent
 systemctl restart streamclip-agent
 sleep 1
 curl -fsS http://127.0.0.1:8080/health
 ss -lntp | grep -E '1935|8080' || true
+ffmpeg -version | head -1 || true
 """
 print(json.dumps({"commands": [script.replace("__AGENT_B64__", agent_b64)]}))
 PY

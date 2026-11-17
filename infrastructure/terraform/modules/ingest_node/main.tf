@@ -248,8 +248,8 @@ locals {
     # 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC preview / relay).
     # Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
     writeQueueSize: 2048
-    readTimeout: 15s
-    writeTimeout: 15s
+    readTimeout: 60s
+    writeTimeout: 60s
     rtmp: yes
     rtmpAddress: :1935
     srt: yes

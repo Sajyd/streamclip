@@ -19,6 +19,7 @@
       "functions": {
         "main.py": {
           "maxDuration": 60,
+          "memory": 3008,
           "includeFiles": "{migrations/**,alembic.ini}"
         }
       }
@@ -59,6 +60,10 @@
     }
   ],
   "crons": [
+    {
+      "path": "/api/v1/internal/cron/drain",
+      "schedule": "* * * * *"
+    },
     {
       "path": "/api/v1/internal/cron/maintenance",
       "schedule": "0 4 * * *"

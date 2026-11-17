@@ -11,8 +11,8 @@ logDestinations: [stdout]
 # 1080p (~6–8 Mbit) + GOP 2s: default 512 overflows reader queues (VLC preview).
 # Power of 2 only. 2048 ≈ 4× default — room for one full keyframe interval under burst.
 writeQueueSize: 2048
-readTimeout: 15s
-writeTimeout: 15s
+readTimeout: 60s
+writeTimeout: 60s
 
 rtmp: yes
 rtmpEncryption: "no"
@@ -26,7 +26,12 @@ srt: yes
 srtAddress: :8890
 
 webrtc: no
-hls: no
+# Local HLS for dashboard preview (proxied; do not expose :8888 publicly).
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsAlwaysRemux: yes
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
 rtsp: no
 
 pathDefaults:

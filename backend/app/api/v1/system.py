@@ -89,6 +89,18 @@ async def readyz(ctx: Ctx, deep: bool = False) -> JSONResponse:
     )
 
 
+@router.get("/internal/cron/drain", dependencies=[Depends(require_cron_secret)])
+async def cron_drain(request: Request, ctx: Ctx) -> dict[str, Any]:
+    """Frequent drain for retries, segment analysis, and soft-disconnect finalize."""
+    summary = await run_due_tasks(
+        ctx,
+        worker=f"drain-{getattr(request.state, 'request_id', 'unknown')}",
+        max_tasks=40,
+        time_budget_seconds=50.0,
+    )
+    return {"status": "ok", "tasks": summary}
+
+
 @router.get("/internal/cron/maintenance", dependencies=[Depends(require_cron_secret)])
 async def cron_maintenance(request: Request, ctx: Ctx) -> dict[str, Any]:
     """Scheduled entry point: queue the daily housekeeping, then drain every

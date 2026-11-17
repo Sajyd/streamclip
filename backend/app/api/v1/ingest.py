@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from urllib.parse import parse_qs
 
@@ -632,20 +633,33 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             return Message(message="no_open_session")
         event = body.event.lower()
         if event in ("publisher_disconnect", "end", "stop"):
-            await ingest_service.close_session(
+            # Soft interrupt: MediaMTX flaps / encoder stalls must not end an
+            # otherwise healthy live. Finalize only after a grace window.
+            from app.tasks.queue import enqueue
+
+            await ingest_service.interrupt_session(
                 session, stream, reason=StreamEndReason.PUBLISHER_ENDED
             )
-            # No more RTMP data → shut down the spot after a 5-minute margin.
-            await ingest_nodes.schedule_idle_termination(
-                session, organization_id=key.organization_id
+            await enqueue(
+                session,
+                "ingest.finalize_interrupted",
+                {"stream_session_id": str(stream.id)},
+                queue="ingest",
+                organization_id=key.organization_id,
+                run_at=datetime.now(UTC) + timedelta(minutes=3),
+                max_attempts=3,
             )
+            # Keep the spot warm during the grace window (finalize / stale
+            # closer schedules termination if the publisher never returns).
         elif event == "segment" and body.storage_key and body.sequence is not None:
             # Upload ack only — quota is charged after analysis.segment succeeds
             # (5 min per analyzed window). Ticks do not bill.
-            from datetime import UTC, datetime
-
+            await ingest_service.resume_session(session, stream)
             stream.last_media_at = datetime.now(UTC)
             await session.flush()
+            await ingest_nodes.cancel_idle_termination(
+                session, organization_id=key.organization_id
+            )
             from app.tasks.queue import enqueue
 
             await enqueue(
@@ -664,8 +678,7 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             queued_segment = True
         elif event in ("processed", "tick") and body.processed_ms:
             # Heartbeat only — do not bill (quota = analyzed 5-min segments).
-            from datetime import UTC, datetime
-
+            await ingest_service.resume_session(session, stream)
             stream.last_media_at = datetime.now(UTC)
             await session.flush()
         elif event in ("lost", "signal_lost"):
@@ -674,6 +687,7 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
                 session, organization_id=key.organization_id
             )
         elif event in ("publisher_ready", "start"):
+            await ingest_service.resume_session(session, stream)
             await ingest_nodes.cancel_idle_termination(
                 session, organization_id=key.organization_id
             )

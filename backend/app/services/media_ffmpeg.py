@@ -2,24 +2,60 @@
 
 from __future__ import annotations
 
+import os
+import platform
 import shutil
 import subprocess
+import tarfile
+import tempfile
+import urllib.request
+from functools import lru_cache
 from pathlib import Path
 
 import structlog
 
 log = structlog.get_logger(__name__)
 
+# Cached under /tmp so warm Vercel invocations reuse the binary.
+_STATIC_CACHE_DIR = Path(os.environ.get("STREAMCLIP_FFMPEG_DIR", "/tmp/streamclip-ffmpeg"))
+
 
 class FFmpegError(RuntimeError):
     pass
 
 
+@lru_cache(maxsize=1)
 def require_ffmpeg() -> str:
+    """Resolve an ffmpeg binary: PATH → env → imageio-ffmpeg → static download."""
     path = shutil.which("ffmpeg")
-    if not path:
-        raise FFmpegError("ffmpeg not found on PATH")
-    return path
+    if path:
+        return path
+
+    for key in ("FFMPEG_PATH", "IMAGEIO_FFMPEG_EXE"):
+        candidate = (os.environ.get(key) or "").strip()
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+
+    for candidate in ("/usr/local/bin/ffmpeg", "/opt/bin/ffmpeg"):
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and Path(exe).is_file():
+            log.info("ffmpeg_resolved", source="imageio_ffmpeg", path=exe)
+            return exe
+    except Exception as exc:  # noqa: BLE001 — optional dependency / wheel missing
+        log.warning("ffmpeg_imageio_unavailable", error=str(exc))
+
+    cached = _ensure_static_ffmpeg()
+    if cached:
+        log.info("ffmpeg_resolved", source="static_download", path=cached)
+        return cached
+
+    raise FFmpegError("ffmpeg not found on PATH")
 
 
 def extract_frames_480p(
@@ -99,3 +135,38 @@ def _run(cmd: list[str], *, label: str) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise FFmpegError(f"{label} failed ({proc.returncode}): {proc.stderr[-800:]}")
+
+
+def _ensure_static_ffmpeg() -> str | None:
+    """Download a static ffmpeg build into /tmp (Vercel / dedicated boxes)."""
+    dest = _STATIC_CACHE_DIR / "ffmpeg"
+    if dest.is_file() and os.access(dest, os.X_OK):
+        return str(dest)
+
+    machine = platform.machine().lower()
+    if machine in ("aarch64", "arm64"):
+        arch = "arm64"
+    elif machine in ("x86_64", "amd64"):
+        arch = "amd64"
+    else:
+        log.warning("ffmpeg_static_unsupported_arch", machine=machine)
+        return None
+
+    url = f"https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-{arch}-static.tar.xz"
+    _STATIC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="ffmpeg-dl-") as tmp:
+            archive = Path(tmp) / "ffmpeg.tar.xz"
+            log.info("ffmpeg_static_download", url=url)
+            urllib.request.urlretrieve(url, archive)  # noqa: S310 — fixed HTTPS vendor URL
+            with tarfile.open(archive, "r:xz") as tar:
+                tar.extractall(path=tmp, filter="data")
+            extracted = next(Path(tmp).glob("ffmpeg-*-static/ffmpeg"), None)
+            if extracted is None or not extracted.is_file():
+                return None
+            dest.write_bytes(extracted.read_bytes())
+            dest.chmod(0o755)
+        return str(dest)
+    except Exception as exc:  # noqa: BLE001 — best-effort bootstrap
+        log.warning("ffmpeg_static_download_failed", error=str(exc))
+        return None
