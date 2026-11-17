@@ -1,24 +1,20 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useActionState, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 
-import {
-  issueIngestKeyAction,
-  type IssueKeyState,
-} from "@/app/actions/ingest";
 import { checkoutAction } from "@/app/actions/billing";
 import {
   completeOnboardingAction,
   saveOnboardingAction,
   type OnboardingPatch,
 } from "@/app/actions/onboarding";
+import { StreamKeyManager } from "@/components/app/ingest-credentials";
 import { LiveDetector } from "@/components/app/live-detector";
 import { PlanCard } from "@/components/plan-card";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, SubmitButton } from "@/components/ui/form";
-import { Badge, Card, CardDescription, CardTitle, Notice } from "@/components/ui/primitives";
-import { idleState } from "@/lib/form-state";
+import { Card, CardDescription, CardTitle, Notice } from "@/components/ui/primitives";
 import { cx } from "@/lib/format";
 import type { BillingOverview, Onboarding, Plan, StreamKey, StreamSession } from "@/types/api";
 
@@ -72,8 +68,6 @@ const SOCIALS = [
   { id: "tiktok" as const, label: "TikTok", color: "from-cyan-400/20 to-pink-500/5" },
   { id: "instagram" as const, label: "Instagram Reels", color: "from-fuchsia-500/20 to-amber-400/5" },
 ];
-
-const ISSUE_INITIAL: IssueKeyState = { ...idleState };
 
 function Progress({ step }: { step: StepId }) {
   const index = Math.max(0, STEPS.indexOf(step));
@@ -136,99 +130,46 @@ function ChoiceGrid({
   );
 }
 
-function CopyRow({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-medium tracking-wide text-ink-400 uppercase">{label}</p>
-        <button
-          type="button"
-          className="text-xs font-medium text-brand-300 hover:text-brand-200"
-          onClick={async () => {
-            await navigator.clipboard.writeText(value);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }}
-        >
-          {copied ? "Copié" : "Copier"}
-        </button>
-      </div>
-      <code className="block overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm break-all text-ink-100">
-        {value}
-      </code>
-    </div>
-  );
-}
-
 function ObsGuide({
   software,
   existingKey,
   canManage,
   ingestOnline,
+  apiUrl,
 }: {
   software: "obs" | "streamlabs";
   existingKey: StreamKey | null;
   canManage: boolean;
   ingestOnline: boolean;
+  apiUrl: string | null;
 }) {
-  const [state, formAction, pending] = useActionState(issueIngestKeyAction, ISSUE_INITIAL);
-  const key = state.key ?? existingKey;
-  const clearSecret = state.key?.stream_key ?? null;
   const isStreamlabs = software === "streamlabs";
 
   return (
     <div className="space-y-5">
-      {!ingestOnline ? (
-        <Notice tone="neutral" title="Serveur d’ingestion hors ligne">
-          Vous pouvez déjà créer votre clé. Les adresses RTMPS apparaîtront dès que le serveur sera
-          joignable — gardez-les précieusement.
-        </Notice>
-      ) : null}
-
-      {canManage && !existingKey && !state.key ? (
-        <form action={formAction}>
-          <input type="hidden" name="label" value={isStreamlabs ? "Streamlabs" : "OBS"} />
-          <button type="submit" disabled={pending} className={buttonClasses({ variant: "primary" })}>
-            {pending ? "Création…" : "Créer ma clé d’ingestion"}
-          </button>
-        </form>
-      ) : null}
-
-      {key ? (
-        <div className="space-y-3 rounded-2xl border border-white/10 bg-ink-950/70 p-4">
-          {clearSecret ? (
-            <Notice tone="warn" title="Copiez la clé maintenant">
-              Le secret ne sera plus jamais réaffiché. Si vous le perdez, régénérez-en une depuis le
-              tableau de bord.
-            </Notice>
-          ) : (
-            <p className="text-sm text-ink-300">
-              Clé active <Badge>…{key.key_hint}</Badge>
-              {key.label ? ` · ${key.label}` : ""}. Le secret n’est plus affiché — régénérez-la si
-              besoin depuis le tableau de bord.
-            </p>
-          )}
-          {key.rtmps_url ? <CopyRow label="Serveur RTMPS" value={key.rtmps_url} /> : null}
-          {clearSecret ? <CopyRow label="Clé de stream" value={clearSecret} /> : null}
-        </div>
-      ) : null}
+      <StreamKeyManager
+        canManage={canManage}
+        ingestOnline={ingestOnline}
+        apiUrl={apiUrl}
+        existingKey={existingKey}
+        defaultLabel={isStreamlabs ? "Streamlabs" : "OBS"}
+      />
 
       <ol className="space-y-4">
         {(isStreamlabs
           ? [
-              "Ouvrez Streamlabs Desktop → Paramètres → Stream.",
-              "Ajoutez une destination personnalisée (Custom RTMP) en plus de Twitch/YouTube.",
-              "Collez le serveur RTMPS STREAMCLIP et la clé de stream ci-dessus.",
-              "Gardez votre plateforme principale inchangée : STREAMCLIP reçoit une copie du live.",
-              "Démarrez le live comme d’habitude. STREAMCLIP détecte le signal automatiquement.",
+              "Créez votre clé STREAMCLIP ci-dessus et copiez l’URL API + la clé secrète (une seule fois).",
+              "Avant le live : « Préparer mon live » avec votre clé → l’API démarre votre instance et renvoie l’URL RTMP.",
+              "Ouvrez Streamlabs → Paramètres → Stream → destination Custom RTMP.",
+              "Collez le serveur RTMP renvoyé et votre clé secrète. Gardez Twitch/YouTube en parallèle.",
+              "Démarrez le live : MediaMTX reçoit le flux ; toutes les 5 min l’analyse met à jour vos highlights.",
             ]
           : [
-              "Ouvrez OBS Studio → Paramètres → Stream (ou utilisez le plugin Multiple RTMP Outputs).",
-              "Service : Personnalisé. Serveur : l’URL RTMPS STREAMCLIP. Clé : votre clé secrète.",
-              "Astuce : pour garder Twitch/YouTube en parallèle, ajoutez STREAMCLIP via Multiple RTMP Outputs.",
-              "Vos clés Twitch / YouTube / Kick ne sont jamais demandées par STREAMCLIP.",
-              "Démarrez le live. Dès que le signal arrive, STREAMCLIP s’occupe du reste.",
+              "Créez votre clé STREAMCLIP ci-dessus et copiez l’URL API + la clé secrète (une seule fois).",
+              "Avant le live : « Préparer mon live » → l’API démarre votre EC2 spot et renvoie rtmp://…",
+              "OBS → Paramètres → Stream (ou Multiple RTMP Outputs) : Service Personnalisé.",
+              "Serveur = URL RTMP renvoyée. Clé = votre clé secrète complète.",
+              "Démarrez le live : ingestion + analyse 5 min → résultats dans le tableau de bord.",
             ]
         ).map((text, index) => (
           <li key={text} className="flex gap-3">
@@ -248,6 +189,7 @@ export function OnboardingWizard({
   displayName,
   canManage,
   ingestOnline,
+  ingestApiUrl,
   ingestKey,
   sessions,
   plans,
@@ -258,6 +200,7 @@ export function OnboardingWizard({
   displayName: string | null;
   canManage: boolean;
   ingestOnline: boolean;
+  ingestApiUrl: string | null;
   ingestKey: StreamKey | null;
   sessions: StreamSession[];
   plans: Plan[];
@@ -485,6 +428,7 @@ export function OnboardingWizard({
               existingKey={ingestKey}
               canManage={canManage}
               ingestOnline={ingestOnline}
+              apiUrl={ingestApiUrl}
             />
           </div>
         </Card>

@@ -12,11 +12,12 @@ import {
 } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
 import { AutoRefresh } from "@/components/app/auto-refresh";
+import { StreamKeyManager } from "@/components/app/ingest-credentials";
 import { buttonClasses } from "@/components/ui/button";
 import { Field, Form, FormMessage, SelectField, SubmitButton } from "@/components/ui/form";
 import { Badge, Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
 import { PASSWORD_MIN_LENGTH, SUPPORTED_TIME_ZONES } from "@/lib/constants";
-import { getAuthSessions, getDataExports, requireSession } from "@/lib/dal";
+import { getAuthSessions, getDataExports, getIngestKey, requireSession } from "@/lib/dal";
 import { describeUserAgent, formatBytes, formatDateTime } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Paramètres" };
@@ -27,9 +28,10 @@ async function Settings() {
   const { token, me } = await requireSession(PATH);
   const { user, organization, capabilities } = me;
   const canManage = organization.role === "owner" || organization.role === "admin";
-  const [sessions, exports] = await Promise.all([
+  const [sessions, exports, ingestKey] = await Promise.all([
     getAuthSessions(token, PATH),
     capabilities.storage && canManage ? getDataExports(token, PATH) : Promise.resolve([]),
+    capabilities.ingest_keys && canManage ? getIngestKey(token, PATH) : Promise.resolve(null),
   ]);
   const timeZone = user.timezone;
   const timeZones = SUPPORTED_TIME_ZONES.includes(timeZone as (typeof SUPPORTED_TIME_ZONES)[number])
@@ -120,6 +122,25 @@ async function Settings() {
             <SubmitButton pendingLabel="Modification…">Modifier le mot de passe</SubmitButton>
           </Form>
         </Card>
+
+        {capabilities.ingest_keys && canManage ? (
+          <Card>
+            <CardTitle>Clé d&apos;ingestion</CardTitle>
+            <CardDescription>
+              URL API + clé secrète. L&apos;API démarre votre instance spot et renvoie le RTMP. La clé
+              n&apos;est affichée qu&apos;une seule fois à la création ou à la régénération.
+            </CardDescription>
+            <div className="mt-5">
+              <StreamKeyManager
+                canManage={canManage}
+                ingestOnline={capabilities.ingest_online}
+                apiUrl={capabilities.ingest_api_url}
+                existingKey={ingestKey}
+                timeZone={timeZone}
+              />
+            </div>
+          </Card>
+        ) : null}
 
         <Card>
           <CardTitle>Appareils connectés</CardTitle>

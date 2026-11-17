@@ -61,7 +61,7 @@ async def test_persist_and_list_highlights(client: httpx.AsyncClient, ctx: AppCo
             moments=moments,
             transcript_text="wow c etait fort",
             frames=12,
-            model="amazon.nova-lite-v1:0",
+            model="us.openai.gpt-6-luna",
             provider="bedrock",
         )
 

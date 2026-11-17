@@ -43,9 +43,9 @@ bac à sable SQL.
 Voir `segment-pipeline.md`.
 
 OBS → RTMPS/SRT → MediaMTX sur **t4g.small** → toutes les 5 min : enregistrement
-HD S3 (`tmp/lives/<session>/`) → FFmpeg frames 480p + ASR → Bedrock Nova Lite
-(Luna) → moments viraux JSON en DB → frontend Remotion 9:16 (viewport cam
-optionnel). Même instance pour enregistrement + analyse ; terminée en fin de live.
+HD S3 (`tmp/lives/<session>/`) → FFmpeg frames 480p + ASR → Bedrock GPT-6 Luna
+→ moments viraux JSON en DB → frontend Remotion 9:16 (viewport cam optionnel).
+Même instance pour enregistrement + analyse ; terminée en fin de live.
 
 ## 5. Choix IA et coûts (ordre de grandeur)
 
@@ -54,7 +54,7 @@ Budgets 10 % HT / heure : Starter ≈ 0,079 €/h … Business ≈ 0,041 €/h.
 | Brique | Candidat | Coût indicatif |
 | --- | --- | --- |
 | ASR | Groq whisper-large-v3-turbo | ≈ 0,04 USD/h (API) |
-| Multimodal | Bedrock Nova Lite (`amazon.nova-lite-v1:0`) | quelques ¢ / h |
+| Multimodal | Bedrock GPT-6 Luna (`us.openai.gpt-6-luna`) | quelques ¢ / h |
 | Compute | EC2 **t4g.small** spot | ≈ 0,003–0,008 USD/h |
 
 Amazon Transcribe batch (0,36 USD/h) est **incompatible** avec la règle des 10 %

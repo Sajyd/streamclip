@@ -125,8 +125,11 @@ class Capabilities(ApiModel):
     # Control plane for STREAMCLIP ingest keys (OBS destinations). Independent
     # of live_processing: keys can be issued before MediaMTX accepts traffic.
     ingest_keys: bool
-    # True when a public ingest hostname is configured (publish URLs ready).
+    # True when a public ingest hostname is configured (publish accepted).
     ingest_online: bool
+    # Stable API resolve URL (same for every org). POST/GET with the stream key
+    # starts the dedicated spot and redirects/returns that user's RTMP URL.
+    ingest_api_url: str | None
     # Official OAuth for social networks (YouTube / TikTok / Instagram).
     social_oauth: bool
 
@@ -390,6 +393,9 @@ class StreamKeyOut(ApiModel):
     status: str
     created_at: datetime
     last_used_at: datetime | None
+    # Stable resolve API (always set). Use with stream_key to get the RTMP host.
+    ingest_api_url: str
+    # Dedicated instance RTMP URL — set when the org's spot is READY.
     rtmps_url: str | None
     srt_url: str | None
     # Clear OBS stream key — only present right after create/rotate.
@@ -399,6 +405,21 @@ class StreamKeyOut(ApiModel):
 
 class StreamKeyIssueRequest(ApiModel):
     label: Annotated[str, Field(default="", max_length=80)] = ""
+
+
+class IngestResolveRequest(ApiModel):
+    # Full OBS stream key: `{public_id}/{secret}` (shown once at issue time).
+    # Optional when the caller is authenticated — resolve uses their org.
+    stream_key: Annotated[str | None, Field(default=None, min_length=16, max_length=256)] = None
+
+
+class IngestResolveOut(ApiModel):
+    status: str  # starting | ready | unavailable
+    ingest_api_url: str
+    rtmp_url: str | None = None
+    analysis_url: str | None = None
+    public_hostname: str | None = None
+    message: str
 
 
 class StreamSessionOut(ApiModel):

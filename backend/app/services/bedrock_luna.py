@@ -1,4 +1,4 @@
-"""Bedrock multimodal analysis (Amazon Nova Lite - the 'Luna'-class basic model).
+"""Bedrock multimodal analysis with OpenAI GPT-6 Luna.
 
 Given 480p frames + a full 5-minute transcript, returns non-overlapping viral
 moments (30-60 s, prefer 60 s), word timings, virality score, title,
@@ -21,7 +21,8 @@ from app.core.config import Settings
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_MODEL = "amazon.nova-lite-v1:0"
+DEFAULT_MODEL = "us.openai.gpt-6-luna"
+DEFAULT_REGION = "us-east-1"
 MIN_MOMENT_MS = 30_000
 MAX_MOMENT_MS = 60_000
 TARGET_MOMENT_MS = 60_000
@@ -91,19 +92,13 @@ def _clamp_moment(raw: dict[str, Any]) -> ViralMoment | None:
         end = start + MIN_MOMENT_MS
     if end - start > MAX_MOMENT_MS:
         end = start + TARGET_MOMENT_MS
-    # Prefer extending toward 60s when short but >= 30.
     if MIN_MOMENT_MS <= (end - start) < TARGET_MOMENT_MS:
         end = min(start + TARGET_MOMENT_MS, 300_000)
     cam_raw = raw.get("camera") or {}
     camera = CameraBox(
         detected=bool(cam_raw.get("detected")),
-        x=int(cam_raw.get("x") or 960),
-        y=int(cam_raw.get("y") or 200),
-    )
-    camera = CameraBox(
-        detected=camera.detected,
-        x=max(0, min(1919, camera.x)),
-        y=max(0, min(1079, camera.y)),
+        x=max(0, min(1919, int(cam_raw.get("x") or 960))),
+        y=max(0, min(1079, int(cam_raw.get("y") or 200))),
     )
     words = []
     for w in raw.get("words") or []:
@@ -121,8 +116,7 @@ def _clamp_moment(raw: dict[str, Any]) -> ViralMoment | None:
     desc = str(raw.get("description") or "").strip()
     if hashtags and not any(h in desc for h in hashtags):
         desc = (desc + " " + " ".join(hashtags)).strip()
-    score = float(raw.get("score") or 0)
-    score = max(0.0, min(1.0, score))
+    score = max(0.0, min(1.0, float(raw.get("score") or 0)))
     return ViralMoment(
         start_ms=max(0, start),
         end_ms=min(300_000, end),
@@ -156,7 +150,7 @@ def _parse_json_payload(text: str) -> dict[str, Any]:
 
 class BedrockLuna:
     def __init__(self, settings: Settings) -> None:
-        region = settings.bedrock_region or settings.s3_region or "eu-north-1"
+        region = settings.bedrock_region or DEFAULT_REGION
         self.model_id = settings.bedrock_model or DEFAULT_MODEL
         self._client = boto3.client("bedrock-runtime", region_name=region)
 
@@ -168,12 +162,12 @@ class BedrockLuna:
         frame_paths: list[Path],
         max_frames: int = 60,
     ) -> list[ViralMoment]:
-        """Send frames (≤1/5s → ~60 for 5 min) + transcript to Nova Lite."""
+        """Send frames (about 1/5s -> ~60 for 5 min) + transcript to GPT-6 Luna."""
         sampled = frame_paths[:max_frames]
         content: list[dict[str, Any]] = [
             {
                 "text": (
-                    f"Transcription complète ({len(transcript_words)} mots):\n"
+                    f"Transcription complete ({len(transcript_words)} mots):\n"
                     f"{transcript_text[:12000]}\n\n"
                     "Mots (echantillon JSON): "
                     + json.dumps(transcript_words[:400], ensure_ascii=False)
@@ -182,7 +176,6 @@ class BedrockLuna:
         ]
         for path in sampled:
             data = path.read_bytes()
-            # Nova image blocks via Converse API
             content.append(
                 {
                     "image": {

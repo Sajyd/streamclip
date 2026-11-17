@@ -1,7 +1,7 @@
 """5-minute live segment pipeline (runs on the ingest t4g.small).
 
-Record HD → S3 → FFmpeg frames (480p / 5s) + ASR → Bedrock Luna (Nova Lite)
-→ persist viral moments. Designed to finish within the next 5-minute window.
+Record HD -> S3 -> FFmpeg frames (480p / 5s) + ASR -> Bedrock GPT-6 Luna
+-> persist viral moments. Designed to finish within the next 5-minute window.
 """
 
 from __future__ import annotations
@@ -251,7 +251,7 @@ async def analyze_local_segment(
             {"text": w.text, "start_ms": w.start_ms, "end_ms": w.end_ms} for w in transcript.words
         ]
 
-        model = settings.bedrock_model or "amazon.nova-lite-v1:0"
+        model = settings.bedrock_model or "us.openai.gpt-6-luna"
         moments: list[ViralMoment] = []
         if frames:
             luna = BedrockLuna(settings)

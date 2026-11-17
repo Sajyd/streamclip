@@ -77,10 +77,14 @@ class Settings(BaseSettings):
     data_export_ttl_days: int = 7
 
     # --- Ingest (MediaMTX data plane) ---------------------------------------
-    # Public hostname publishers connect to (without scheme), e.g. ingest.example.com.
+    # Users always get PUBLIC_APP_URL/api/v1/ingest/resolve. That endpoint
+    # authenticates the stream key, starts the org's dedicated t4g.small spot
+    # if needed, and redirects/returns rtmp://{instance}:1935/live.
+    # Optional fallback hostname while per-org RunInstances is not yet wired.
     ingest_public_host: str | None = None
-    # Optional full URL templates; `{public_id}` / `{secret}` are substituted.
+    # Optional explicit RTMP URL used only to derive a fallback hostname.
     ingest_rtmps_url: str | None = None
+    # Optional SRT URL template; `{public_id}` / `{secret}` are substituted.
     ingest_srt_url: str | None = None
     # Shared secret for MediaMTX → API auth/event webhooks.
     ingest_hook_secret: SecretStr | None = None
@@ -92,9 +96,10 @@ class Settings(BaseSettings):
     asr_base_url: str = "https://api.groq.com/openai/v1"
     asr_model: str = "whisper-large-v3-turbo"
 
-    # --- Bedrock multimodal (Luna / Nova Lite) ------------------------------
-    bedrock_region: str | None = None
-    bedrock_model: str = "amazon.nova-lite-v1:0"
+    # --- Bedrock multimodal (OpenAI GPT-6 Luna) -----------------------------
+    # Luna is served via cross-Region inference on bedrock-runtime (US profile).
+    bedrock_region: str | None = "us-east-1"
+    bedrock_model: str = "us.openai.gpt-6-luna"
     # Length of each recorded HD segment on the ingest instance (seconds).
     segment_duration_sec: int = 300
 

@@ -13,6 +13,12 @@ variable "api_auth_url" {
   description = "Full URL of POST /api/v1/ingest/hooks/auth on the control plane."
 }
 
+variable "api_event_url" {
+  type        = string
+  description = "Full URL of POST /api/v1/ingest/hooks/event on the control plane."
+  default     = ""
+}
+
 variable "ingest_hook_secret" {
   type        = string
   sensitive   = true

@@ -80,6 +80,7 @@ module "ingest_node" {
   name               = "streamclip-${local.environment}-ingest"
   bucket_arn         = module.storage.bucket_arn
   api_auth_url       = var.ingest_api_auth_url
+  api_event_url      = var.ingest_api_event_url != "" ? var.ingest_api_event_url : replace(var.ingest_api_auth_url, "/auth", "/event")
   ingest_hook_secret = var.ingest_hook_secret
   instance_type      = "t4g.small"
   use_spot           = true

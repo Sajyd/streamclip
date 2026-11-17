@@ -103,6 +103,7 @@ async function Dashboard() {
         <IngestPanel
           canManage={canManage}
           ingestOnline={capabilities.ingest_online}
+          apiUrl={capabilities.ingest_api_url}
           liveProcessing={capabilities.live_processing}
           existingKey={ingestKey}
           sessions={ingestSessions}

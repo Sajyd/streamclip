@@ -32,13 +32,14 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert body["status"] == "active"
     assert body["stream_key"].startswith(body["public_id"] + "/")
     assert "sc_live_" in body["stream_key"]
-    assert body["rtmps_url"].endswith(f"/live/{body['public_id']}")
+    assert body["ingest_api_url"].endswith("/api/v1/ingest/resolve")
     assert body["ingest_online"] is True
     clear = body["stream_key"]
 
     again = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert again.status_code == 200
     assert again.json()["stream_key"] is None  # never re-shown
+    assert again.json()["ingest_api_url"].endswith("/api/v1/ingest/resolve")
     assert again.json()["public_id"] == body["public_id"]
 
     rotated = await client.post(f"{API}/ingest/key/rotate", json={}, headers=account.headers)
@@ -50,6 +51,45 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert revoked.status_code == 200
     missing = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert missing.status_code == 404
+
+
+async def test_resolve_redirects_to_dedicated_rtmp(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """API resolve (session or stream key) → dedicated instance RTMP."""
+    account = await register(client, email="ingest-resolve@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    clear = issued["stream_key"]
+
+    # Logged-in resolve (no secret re-entry — show-once safe).
+    resolved = await client.post(f"{API}/ingest/resolve", json={}, headers=account.headers)
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body["status"] == "ready"
+    assert body["rtmp_url"] == "rtmp://ingest.test.local:1935/live"
+    assert body["analysis_url"] == "http://ingest.test.local:8080"
+
+    # Unauthenticated resolve via stream key + optional 302.
+    by_key = await client.post(f"{API}/ingest/resolve", json={"stream_key": clear})
+    assert by_key.status_code == 200
+    assert by_key.json()["rtmp_url"] == body["rtmp_url"]
+
+    redirected = await client.get(
+        f"{API}/ingest/resolve",
+        params={"stream_key": clear},
+        follow_redirects=False,
+    )
+    assert redirected.status_code == 302
+    assert redirected.headers["location"] == "rtmp://ingest.test.local:1935/live"
+
+    # Without fallback host a new org's node stays "starting".
+    ctx.settings.ingest_public_host = None
+    other = await register(client, email="ingest-resolve-starting@example.com")
+    await client.post(f"{API}/ingest/key", json={}, headers=other.headers)
+    starting = await client.post(f"{API}/ingest/resolve", json={}, headers=other.headers)
+    assert starting.status_code == 202
+    assert starting.json()["status"] == "starting"
+    assert starting.json()["rtmp_url"] is None
 
 
 async def test_mediamtx_auth_opens_session_and_disconnect_closes(
@@ -169,4 +209,5 @@ async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True
     assert caps["ingest_online"] is True
+    assert caps["ingest_api_url"].endswith("/api/v1/ingest/resolve")
     assert caps["live_processing"] is False

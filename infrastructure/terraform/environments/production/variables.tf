@@ -9,13 +9,19 @@ variable "bucket_name" {
 }
 
 variable "enable_ingest_node" {
-  description = "Launch a MediaMTX EC2 ingest node (default VPC). Off until secrets are ready."
+  description = "Launch a MediaMTX EC2 ingest node (default VPC)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ingest_api_auth_url" {
-  description = "POST URL for MediaMTX auth (…/api/v1/ingest/hooks/auth)."
+  description = "POST URL for MediaMTX auth (.../api/v1/ingest/hooks/auth)."
+  type        = string
+  default     = ""
+}
+
+variable "ingest_api_event_url" {
+  description = "POST URL for MediaMTX events (.../api/v1/ingest/hooks/event)."
   type        = string
   default     = ""
 }

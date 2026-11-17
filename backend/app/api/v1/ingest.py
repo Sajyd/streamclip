@@ -1,14 +1,16 @@
-"""Ingest keys for OBS and MediaMTX authentication / lifecycle hooks."""
+"""Ingest keys, resolve→dedicated RTMP instance, and MediaMTX hooks."""
 
 from __future__ import annotations
 
 import hmac
+from typing import Annotated
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Query, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 
-from app.api.deps import Ctx, CurrentPrincipal, Meta
+from app.api.deps import Ctx, CurrentPrincipal, Meta, OptionalPrincipal
 from app.core import release
 from app.core.errors import (
     AuthenticationError,
@@ -21,6 +23,8 @@ from app.models.media import StreamKey, StreamSession
 from app.schemas.api import (
     IngestAuthHookRequest,
     IngestEventHookRequest,
+    IngestResolveOut,
+    IngestResolveRequest,
     Message,
     StreamKeyIssueRequest,
     StreamKeyOut,
@@ -28,6 +32,7 @@ from app.schemas.api import (
     StreamSessionOut,
 )
 from app.services import ingest as ingest_service
+from app.services import ingest_nodes
 
 router = APIRouter(tags=["ingest"])
 
@@ -46,26 +51,30 @@ def _require_ingest_keys() -> None:
         )
 
 
+async def _instance_rtmp_for_org(ctx: Ctx, organization_id) -> str | None:
+    async with ctx.db.system_tx() as session:
+        node = await ingest_nodes.get_dedicated_node(session, organization_id)
+    if node is not None and node.status.value == "ready" and node.public_hostname:
+        return ingest_nodes.rtmp_url_for_host(node.public_hostname)
+    return None
+
+
 def _key_out(
     ctx: Ctx,
     key: StreamKey,
     *,
     clear_secret: str | None = None,
+    instance_rtmp_url: str | None = None,
 ) -> StreamKeyOut:
+    # Clear secret only right after create/rotate (show-once).
+    # ingest_api_url is always the same resolve endpoint; rtmps_url is the
+    # dedicated spot's RTMP address once that instance is READY.
     endpoints = ingest_service.endpoints_for(
-        ctx.settings, public_id=key.public_id, secret=clear_secret
+        ctx.settings,
+        public_id=key.public_id,
+        secret=clear_secret,
+        instance_rtmp_url=instance_rtmp_url,
     )
-    # Without the clear secret we still advertise the RTMPS base path when online.
-    rtmps = endpoints.rtmps_url
-    srt = endpoints.srt_url
-    stream_key = endpoints.stream_key
-    if clear_secret is None and ctx.settings.ingest_online:
-        host = ctx.settings.ingest_public_host or ""
-        rtmps = ctx.settings.ingest_rtmps_url or f"rtmps://{host}:1935/live/{key.public_id}"
-        if "{public_id}" in rtmps:
-            rtmps = rtmps.format(public_id=key.public_id)
-        srt = None  # needs the secret
-        stream_key = None
     return StreamKeyOut(
         public_id=key.public_id,
         key_hint=key.key_hint,
@@ -73,9 +82,10 @@ def _key_out(
         status=key.status.value,
         created_at=key.created_at,
         last_used_at=key.last_used_at,
-        rtmps_url=rtmps,
-        srt_url=srt,
-        stream_key=stream_key,
+        ingest_api_url=endpoints.ingest_api_url,
+        rtmps_url=endpoints.rtmps_url,
+        srt_url=endpoints.srt_url,
+        stream_key=endpoints.stream_key,
         ingest_online=ctx.settings.ingest_online,
     )
 
@@ -108,7 +118,7 @@ def _require_hook_secret(request: Request, ctx: Ctx) -> None:
 
 
 def _public_id_from_path(path: str) -> str | None:
-    # Expected: live/{public_id} or /live/{public_id}
+    # Expected: live/{public_id} or live/{public_id}/{secret} (OBS stream key in path)
     parts = [p for p in path.strip("/").split("/") if p]
     if len(parts) >= 2 and parts[0] == "live":
         return parts[1]
@@ -117,9 +127,19 @@ def _public_id_from_path(path: str) -> str | None:
     return None
 
 
+def _secret_from_path(path: str) -> str | None:
+    parts = [p for p in path.strip("/").split("/") if p]
+    if len(parts) >= 3 and parts[0] == "live" and parts[2].startswith("sc_live_"):
+        return parts[2]
+    return None
+
+
 def _secret_from_hook(body: IngestAuthHookRequest) -> str | None:
     if body.password:
         return body.password
+    embedded = _secret_from_path(body.path)
+    if embedded:
+        return embedded
     if body.query:
         values = parse_qs(body.query.lstrip("?"))
         for key in ("pwd", "password", "secret"):
@@ -135,7 +155,8 @@ async def get_ingest_key(principal: CurrentPrincipal, ctx: Ctx) -> StreamKeyOut:
         key = await ingest_service.get_active_key(session, principal.organization_id)
     if key is None:
         raise NotFoundError("Aucune clé d'ingestion active.", code="stream_key_not_found")
-    return _key_out(ctx, key)
+    instance_rtmp = await _instance_rtmp_for_org(ctx, principal.organization_id)
+    return _key_out(ctx, key, instance_rtmp_url=instance_rtmp)
 
 
 @router.post(
@@ -163,7 +184,83 @@ async def issue_ingest_key(
             label=body.label,
             meta=meta,
         )
-    return _key_out(ctx, key, clear_secret=clear)
+    instance_rtmp = await _instance_rtmp_for_org(ctx, principal.organization_id)
+    return _key_out(ctx, key, clear_secret=clear, instance_rtmp_url=instance_rtmp)
+
+
+@router.post("/ingest/resolve", response_model=None)
+async def resolve_ingest_post(
+    ctx: Ctx,
+    principal: OptionalPrincipal,
+    body: IngestResolveRequest | None = None,
+) -> Response:
+    """Resolve → dedicated RTMP instance.
+
+    Prefer the logged-in org (no secret re-entry). Alternatively pass
+    `stream_key` for unauthenticated resolve/redirect clients.
+    """
+    return await _resolve(ctx, body=body, principal=principal, redirect=False)
+
+
+@router.get("/ingest/resolve", response_model=None)
+async def resolve_ingest_get(
+    ctx: Ctx,
+    stream_key: Annotated[str | None, Query(min_length=16, max_length=256)] = None,
+    redirect: bool = True,
+) -> Response:
+    """GET with stream_key: optional 302 to rtmp:// when the spot is ready."""
+    body = IngestResolveRequest(stream_key=stream_key) if stream_key else None
+    return await _resolve(ctx, body=body, principal=None, redirect=redirect)
+
+
+async def _resolve(
+    ctx: Ctx,
+    *,
+    body: IngestResolveRequest | None,
+    principal: OptionalPrincipal | None,
+    redirect: bool,
+) -> Response:
+    from app.services.auth import Principal
+
+    _require_ingest_keys()
+    if body and body.stream_key:
+        parsed = ingest_service.parse_obs_key(body.stream_key)
+        if parsed is None:
+            raise PermissionDeniedError("Clé d'ingestion invalide.", code="invalid_stream_key")
+        public_id, secret = parsed
+        async with ctx.db.system_tx() as session:
+            key = await ingest_service.authenticate_publisher(
+                session, public_id=public_id, secret=secret
+            )
+            result = await ingest_nodes.resolve_for_organization(
+                session, ctx.settings, organization_id=key.organization_id
+            )
+    elif isinstance(principal, Principal):
+        async with ctx.db.system_tx() as session:
+            active = await ingest_service.get_active_key(session, principal.organization_id)
+            if active is None:
+                raise NotFoundError("Aucune clé d'ingestion active.", code="stream_key_not_found")
+            result = await ingest_nodes.resolve_for_organization(
+                session, ctx.settings, organization_id=principal.organization_id
+            )
+    else:
+        raise AuthenticationError(
+            "Fournissez la clé de stream ou connectez-vous.",
+            code="unauthenticated",
+        )
+
+    payload = IngestResolveOut(
+        status=result.status,
+        ingest_api_url=result.ingest_api_url,
+        rtmp_url=result.rtmp_url,
+        analysis_url=result.analysis_url,
+        public_hostname=result.public_hostname,
+        message=result.message,
+    )
+    if redirect and result.status == "ready" and result.rtmp_url:
+        return RedirectResponse(url=result.rtmp_url, status_code=status.HTTP_302_FOUND)
+    code = status.HTTP_202_ACCEPTED if result.status == "starting" else status.HTTP_200_OK
+    return JSONResponse(status_code=code, content=payload.model_dump(mode="json"))
 
 
 @router.post(
@@ -224,9 +321,16 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
         key = await ingest_service.authenticate_publisher(
             session, public_id=public_id, secret=secret
         )
-        await ingest_service.open_session_for_publish(
+        # Publisher reached MediaMTX: ensure dedicated node row and bind session.
+        node = await ingest_nodes.ensure_dedicated_node(
+            session, ctx.settings, organization_id=key.organization_id
+        )
+        stream = await ingest_service.open_session_for_publish(
             session, key=key, protocol=protocol, remote_ip=body.ip
         )
+        if stream.ingest_node_id is None:
+            stream.ingest_node_id = node.id
+            await session.flush()
     return Response(status_code=200)
 
 

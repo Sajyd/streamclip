@@ -14,6 +14,7 @@ from app.core import release
 from app.db.migrations import expected_revision
 from app.schemas.api import Capabilities, MetaResponse
 from app.security.passwords import MIN_PASSWORD_LENGTH
+from app.services.ingest_nodes import ingest_api_url
 from app.tasks.queue import enqueue, run_due_tasks
 
 log = structlog.get_logger(__name__)
@@ -33,6 +34,7 @@ def capabilities(ctx: AppContext) -> Capabilities:
         live_processing=release.LIVE_PROCESSING_AVAILABLE,
         ingest_keys=release.INGEST_KEYS_AVAILABLE,
         ingest_online=ctx.settings.ingest_online,
+        ingest_api_url=ingest_api_url(ctx.settings) if release.INGEST_KEYS_AVAILABLE else None,
         social_oauth=release.SOCIAL_OAUTH_AVAILABLE,
     )
 

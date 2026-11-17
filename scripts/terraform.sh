@@ -54,6 +54,19 @@ case "$TARGET" in
     DIR="$ROOT/infrastructure/terraform/environments/$TARGET"
     : "${S3_BUCKET:?S3_BUCKET is not set}"
     export TF_VAR_bucket_name="$S3_BUCKET"
+    # Optional MediaMTX ingest node (t4g.small). Defaults on when secrets are present.
+    if [ -n "${ENABLE_INGEST_NODE:-}" ]; then
+      export TF_VAR_enable_ingest_node="$ENABLE_INGEST_NODE"
+    fi
+    if [ -n "${INGEST_API_AUTH_URL:-}" ]; then
+      export TF_VAR_ingest_api_auth_url="$INGEST_API_AUTH_URL"
+    fi
+    if [ -n "${INGEST_API_EVENT_URL:-}" ]; then
+      export TF_VAR_ingest_api_event_url="$INGEST_API_EVENT_URL"
+    fi
+    if [ -n "${INGEST_HOOK_SECRET:-}" ]; then
+      export TF_VAR_ingest_hook_secret="$INGEST_HOOK_SECRET"
+    fi
     INIT_ARGS=(-backend-config="bucket=$STATE_BUCKET" -backend-config="region=$REGION")
     ;;
   *)

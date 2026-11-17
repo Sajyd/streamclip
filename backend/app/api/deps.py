@@ -51,7 +51,19 @@ async def get_principal(request: Request, ctx: Ctx) -> Principal:
     return principal
 
 
+async def get_optional_principal(request: Request, ctx: Ctx) -> Principal | None:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    principal = await authenticate(ctx, token.strip())
+    structlog.contextvars.bind_contextvars(
+        user_id=str(principal.user_id), organization_id=str(principal.organization_id)
+    )
+    return principal
+
+
 CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+OptionalPrincipal = Annotated[Principal | None, Depends(get_optional_principal)]
 
 
 async def get_staff(principal: CurrentPrincipal) -> Principal:

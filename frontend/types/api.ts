@@ -10,6 +10,8 @@ export type Capabilities = {
   live_processing: boolean;
   ingest_keys: boolean;
   ingest_online: boolean;
+  /** Stable resolve API — secret key → dedicated RTMP instance. */
+  ingest_api_url: string | null;
   social_oauth: boolean;
 };
 
@@ -213,10 +215,22 @@ export type StreamKey = {
   status: string;
   created_at: string;
   last_used_at: string | null;
+  /** Stable API resolve URL (same for every org). */
+  ingest_api_url: string;
+  /** Dedicated instance RTMP URL once the spot is ready. */
   rtmps_url: string | null;
   srt_url: string | null;
   stream_key: string | null;
   ingest_online: boolean;
+};
+
+export type IngestResolve = {
+  status: "starting" | "ready" | "unavailable" | string;
+  ingest_api_url: string;
+  rtmp_url: string | null;
+  analysis_url: string | null;
+  public_hostname: string | null;
+  message: string;
 };
 
 export type StreamSession = {

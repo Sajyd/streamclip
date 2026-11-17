@@ -36,6 +36,7 @@ async function OnboardingContent() {
       displayName={user.display_name}
       canManage={canManage}
       ingestOnline={capabilities.ingest_online}
+      ingestApiUrl={capabilities.ingest_api_url}
       ingestKey={ingestKey}
       sessions={sessions}
       plans={info?.catalog.items ?? []}

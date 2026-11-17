@@ -12,8 +12,7 @@ suivant. Pas de flotte GPU, pas de c7g.large.
 3. Sur le même créneau de 5 minutes, l’instance :
    - extrait 1 frame / 5 s en **480p** ;
    - transcrit les 5 minutes (ASR openai-compatible / Groq) ;
-   - envoie frames + transcript à **Bedrock Nova Lite** (`amazon.nova-lite-v1:0`,
-     alias produit « Luna ») ;
+   - envoie frames + transcript à **Bedrock GPT-6 Luna** (`us.openai.gpt-6-luna`) ;
    - reçoit des moments viraux 30–60 s (préférence 60), non chevauchants,
      avec timings mot à mot, score, titre, description+hashtags, et position
      cam streamer `(x,y)` sur un plan **1920×1080** si détectée.
@@ -42,7 +41,7 @@ un highlight par élément du tableau, sous-titres synchronisés. Si
 | --- | --- |
 | EC2 t4g.small spot | ≈ 0,003–0,008 USD/h |
 | ASR Groq whisper turbo | ≈ 0,04 USD/h audio |
-| Bedrock Nova Lite (≈60 images + texte / 5 min) | quelques centimes / h |
+| Bedrock GPT-6 Luna (~60 images + texte / 5 min) | quelques centimes / h |
 | S3 tmp (lifecycle short) | négligeable |
 
 Reste largement sous la règle **infra+processing ≤ 10 % HT** des plans.

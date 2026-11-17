@@ -5,9 +5,10 @@ import { refresh } from "next/cache";
 import { api } from "@/lib/api";
 import { failure, success, text, type FormState } from "@/lib/form-state";
 import { authorized } from "@/lib/mutations";
-import type { StreamKey } from "@/types/api";
+import type { IngestResolve, StreamKey } from "@/types/api";
 
 export type IssueKeyState = FormState & { key?: StreamKey };
+export type ResolveState = FormState & { resolve?: IngestResolve };
 
 export async function issueIngestKeyAction(
   _previous: IssueKeyState,
@@ -66,4 +67,25 @@ export async function revokeIngestKeyAction(): Promise<FormState> {
   }
   refresh();
   return success("Clé d'ingestion révoquée.");
+}
+
+/** Start dedicated spot for the logged-in org → RTMP URL for OBS. */
+export async function resolveIngestAction(
+  _previous: ResolveState,
+  _formData: FormData,
+): Promise<ResolveState> {
+  const result = await authorized((token) =>
+    api<IngestResolve>("/ingest/resolve", {
+      method: "POST",
+      token,
+      body: {},
+    }),
+  );
+  if (!result.ok) {
+    return failure(result.error);
+  }
+  return {
+    ...success(result.data.message),
+    resolve: result.data,
+  };
 }

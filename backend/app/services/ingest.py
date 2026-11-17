@@ -65,29 +65,45 @@ def parse_obs_key(raw: str) -> tuple[str, str] | None:
 
 @dataclass(frozen=True, slots=True)
 class IngestEndpoints:
+    ingest_api_url: str
     rtmps_url: str | None
     srt_url: str | None
     stream_key: str | None
     online: bool
 
 
-def endpoints_for(settings: Settings, *, public_id: str, secret: str | None) -> IngestEndpoints:
+def endpoints_for(
+    settings: Settings,
+    *,
+    public_id: str,
+    secret: str | None,
+    instance_rtmp_url: str | None = None,
+) -> IngestEndpoints:
+    """Values shown in the product UI / OBS.
+
+    API URL   = stable resolve endpoint (same for every org). Calling it with
+                the stream key starts/finds the dedicated spot and returns the
+                RTMP URL for that user's MediaMTX instance.
+    Stream Key = {public_id}/{secret}  (shown once).
+    RTMP URL   = only when the dedicated instance is READY (per org).
+    """
+    from app.services.ingest_nodes import ingest_api_url
+
+    stream_key = f"{public_id}/{secret}" if secret else None
+    srt: str | None = None
     host = (settings.ingest_public_host or "").strip() or None
-    if host is None or secret is None:
-        return IngestEndpoints(rtmps_url=None, srt_url=None, stream_key=None, online=False)
-    rtmps = settings.ingest_rtmps_url or f"rtmps://{host}:1935/live/{public_id}"
-    if "{public_id}" in rtmps:
-        rtmps = rtmps.format(public_id=public_id)
-    srt = settings.ingest_srt_url or (
-        f"srt://{host}:8890?streamid=publish:live/{public_id}:{secret}"
-    )
-    if "{public_id}" in srt:
-        srt = srt.format(public_id=public_id, secret=secret)
+    if secret and host:
+        srt = settings.ingest_srt_url or (
+            f"srt://{host}:8890?streamid=publish:live/{public_id}:{secret}"
+        )
+        if "{public_id}" in srt:
+            srt = srt.format(public_id=public_id, secret=secret)
     return IngestEndpoints(
-        rtmps_url=rtmps,
+        ingest_api_url=ingest_api_url(settings),
+        rtmps_url=instance_rtmp_url,
         srt_url=srt,
-        stream_key=f"{public_id}/{secret}",
-        online=True,
+        stream_key=stream_key,
+        online=settings.ingest_online,
     )
 
 

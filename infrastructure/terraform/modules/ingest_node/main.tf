@@ -139,11 +139,16 @@ resource "aws_iam_instance_profile" "ingest" {
 }
 
 locals {
+  event_url = var.api_event_url != "" ? var.api_event_url : replace(var.api_auth_url, "/auth", "/event")
   userdata = <<-EOF
     #!/bin/bash
     set -euo pipefail
-    dnf install -y docker ffmpeg
+    # AL2023 already ships curl-minimal; do not install the conflicting `curl` package.
+    dnf install -y docker
+    # ffmpeg is not always in AL2023 base repos; MediaMTX must start anyway.
+    dnf install -y ffmpeg || echo "ffmpeg unavailable in repos; install later for segment loop"
     systemctl enable --now docker
+    command -v curl >/dev/null || command -v curl-minimal >/dev/null
     mkdir -p /etc/mediamtx /var/lib/streamclip/segments
     cat >/etc/mediamtx/mediamtx.yml <<'YAML'
     logLevel: info
@@ -158,6 +163,19 @@ locals {
     authHTTPAddress: ${var.api_auth_url}
     authHTTPAdditionalHeaders:
       X-Streamclip-Ingest-Secret: "${var.ingest_hook_secret}"
+    pathDefaults:
+      runOnReady: >
+        curl -fsS -X POST
+        -H "Content-Type: application/json"
+        -H "X-Streamclip-Ingest-Secret: ${var.ingest_hook_secret}"
+        -d "{\"event\":\"publisher_ready\",\"path\":\"$MTX_PATH\",\"protocol\":\"rtmp\"}"
+        ${local.event_url}
+      runOnNotReady: >
+        curl -fsS -X POST
+        -H "Content-Type: application/json"
+        -H "X-Streamclip-Ingest-Secret: ${var.ingest_hook_secret}"
+        -d "{\"event\":\"publisher_disconnect\",\"path\":\"$MTX_PATH\",\"protocol\":\"rtmp\"}"
+        ${local.event_url}
     paths:
       "live/~path":
         source: publisher
@@ -166,8 +184,6 @@ locals {
       -p 1935:1935 -p 8890:8890/udp \
       -v /etc/mediamtx/mediamtx.yml:/mediamtx.yml:ro \
       bluenviron/mediamtx:1.11.3
-    # Segment loop (record 5 min HD → S3 → FFmpeg frames+ASR → Bedrock Luna)
-    # is started per live via: python -m app.cli live-loop --session-id ... --input-url rtmp://127.0.0.1/live/<id>
   EOF
 }
 
