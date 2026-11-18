@@ -310,6 +310,23 @@ async def sync_subscription(
                 period.included_ms = max(period.included_ms, plan.included_seconds * 1000)
                 if period.consumed_ms < period.included_ms:
                     period.exhausted_at = None
+            if period.consumed_ms < period.included_ms:
+                # OBS may still be publishing. Resume that live on the spot
+                # that is still up — the user does not restart the stream.
+                from app.services.ingest import reopen_quota_paused_session
+                from app.services.ingest_nodes import cancel_idle_termination, get_dedicated_node
+
+                node = await get_dedicated_node(session, organization.id)
+                if node is not None:
+                    resumed = await reopen_quota_paused_session(
+                        session,
+                        organization_id=organization.id,
+                        ingest_node_id=node.id,
+                    )
+                    if resumed is not None:
+                        await cancel_idle_termination(
+                            session, organization_id=organization.id, node_id=node.id
+                        )
 
             if created:
                 await notify(

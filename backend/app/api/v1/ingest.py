@@ -565,7 +565,6 @@ def _is_loopback(ip: str | None) -> bool:
     return ip in ("127.0.0.1", "::1", "localhost") or ip.startswith("127.")
 
 
-@router.post("/ingest/hooks/auth")
 def _caller_ip(request: Request) -> str | None:
     state_ip = getattr(request.state, "client_ip", None)
     if isinstance(state_ip, str) and state_ip:
@@ -573,6 +572,7 @@ def _caller_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+@router.post("/ingest/hooks/auth")
 async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
     """MediaMTX auth for a publish.
 
@@ -980,6 +980,16 @@ async def segment_gate(
         remaining = ent.quota.remaining_ms
         if ent.quota.exhausted or remaining <= 0:
             return SegmentGateOut(stop=True, record_seconds=0)
+        # The spot polls this while OBS is still up. A plan bought after the
+        # quota close must resume the same live, not wait for a new publish.
+        await ingest_service.reopen_quota_paused_session(
+            session,
+            organization_id=key.organization_id,
+            stream_key_id=key.id,
+        )
+        await ingest_nodes.cancel_idle_termination(
+            session, organization_id=key.organization_id
+        )
         return SegmentGateOut(stop=False, record_seconds=min(300, remaining // 1000))
 
 
@@ -1038,6 +1048,18 @@ async def segment_analysis_persist(
                 moments=0,
                 stream_session_id=stream.id,
             )
+        if (
+            stream.status is StreamSessionStatus.COMPLETED
+            and stream.end_reason is StreamEndReason.QUOTA_EXHAUSTED
+        ):
+            resumed = await ingest_service.reopen_quota_paused_session(
+                session,
+                organization_id=stream.organization_id,
+                stream_key_id=stream.stream_key_id,
+                ingest_node_id=stream.ingest_node_id,
+            )
+            if resumed is not None:
+                stream = resumed
         await ingest_service.resume_session(session, stream)
         analysis_log = _segment_analysis_details(body, moments)
         await persist_segment_analysis(

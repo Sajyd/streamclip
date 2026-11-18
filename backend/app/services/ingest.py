@@ -20,6 +20,7 @@ from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError, PermissionDeniedError
 from app.core.ids import uuid7
 from app.models.enums import (
+    ActorType,
     ConnectionStatus,
     IngestProtocol,
     StreamEndReason,
@@ -349,6 +350,16 @@ async def ensure_session_for_publisher(
             await session.flush()
         return existing, False
 
+    reopened = await reopen_quota_paused_session(
+        session,
+        organization_id=key.organization_id,
+        stream_key_id=key.id,
+        ingest_node_id=ingest_node_id,
+    )
+    if reopened is not None:
+        # Same session the spot is already segmenting — do not start a second live.
+        return reopened, False
+
     created = await open_session_for_publish(
         session,
         key=key,
@@ -357,6 +368,61 @@ async def ensure_session_for_publisher(
         ingest_node_id=ingest_node_id,
     )
     return created, True
+
+
+async def reopen_quota_paused_session(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    stream_key_id: uuid.UUID | None = None,
+    ingest_node_id: uuid.UUID | None = None,
+) -> StreamSession | None:
+    """Continue the live that was closed only because the quota ran out.
+
+    The spot keeps the same session id for its segment files. A new plan must
+    resume cutting and analysis on that id while OBS is still publishing.
+    """
+    try:
+        entitlement = await entitlements.get_entitlement(session, organization_id)
+    except LookupError:
+        return None
+    if entitlement.quota.exhausted or entitlement.quota.remaining_ms <= 0:
+        return None
+    statement = (
+        select(StreamSession)
+        .where(
+            StreamSession.organization_id == organization_id,
+            StreamSession.status == StreamSessionStatus.COMPLETED,
+            StreamSession.end_reason == StreamEndReason.QUOTA_EXHAUSTED,
+        )
+        .order_by(StreamSession.ended_at.desc())
+        .limit(1)
+    )
+    if stream_key_id is not None:
+        statement = statement.where(StreamSession.stream_key_id == stream_key_id)
+    stream = (await session.execute(statement)).scalar_one_or_none()
+    if stream is None:
+        return None
+    now = datetime.now(UTC)
+    stream.status = StreamSessionStatus.LIVE
+    stream.end_reason = None
+    stream.ended_at = None
+    stream.error_code = None
+    stream.error_message = None
+    stream.last_media_at = now
+    if ingest_node_id is not None and stream.ingest_node_id is None:
+        stream.ingest_node_id = ingest_node_id
+    await session.flush()
+    audit(
+        session,
+        "ingest.quota_resumed",
+        actor_type=ActorType.SYSTEM,
+        organization_id=organization_id,
+        target_type="stream_session",
+        target_id=stream.id,
+        details={"via": "quota_restored"},
+    )
+    return stream
 
 
 async def interrupt_session(

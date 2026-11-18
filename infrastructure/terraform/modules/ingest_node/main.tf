@@ -197,6 +197,7 @@ locals {
     fi
     echo $$ > "$PIDFILE"
     trap 'rm -f "$PIDFILE"' EXIT
+    while true; do
     TARGET=""
     ATTEMPT=0
     while true; do
@@ -208,10 +209,12 @@ locals {
       if [ "$STATUS" = "ready" ] && [ -n "$TARGET" ]; then
         break
       fi
-      # Quota / subscription denied after auth race — stop hammering.
+      # Quota can return when the user subscribes without restarting OBS.
+      # Keep polling; runOnNotReady kills this process if the publisher leaves.
       if [ "$STATUS" = "unavailable" ] && echo "$RESP" | grep -qiE 'quota|abonnement|subscription|refus'; then
-        echo "relay forbidden for $PATH_NAME: $RESP" >&2
-        exit 1
+        echo "relay waiting quota path=$PATH_NAME" >&2
+        sleep 15
+        continue
       fi
       if [ $((ATTEMPT % 20)) -eq 0 ]; then
         echo "relay waiting spot path=$PATH_NAME attempt=$ATTEMPT status=$STATUS" >&2
@@ -223,11 +226,14 @@ locals {
       -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
       "$EVENT_URL" || true
     # Local remux via RTSP — MediaMTX RTMP readers die on OBS DTS jumps.
-    exec ffmpeg -hide_banner -loglevel warning \
+    # Do not exec: if the push ends while OBS is still up, poll and push again.
+    ffmpeg -hide_banner -loglevel warning \
       -rtsp_transport tcp -fflags +genpts+igndts -use_wallclock_as_timestamps 1 \
       -i "rtsp://127.0.0.1:8554/$PATH_NAME" \
       -c copy -f flv -flvflags no_duration_filesize \
-      "$TARGET"
+      "$TARGET" || echo "relay push ended path=$PATH_NAME" >&2
+    sleep 3
+  done
     RELAY
     sed -i 's/^    //' /usr/local/bin/streamclip-edge-relay
     chmod +x /usr/local/bin/streamclip-edge-relay

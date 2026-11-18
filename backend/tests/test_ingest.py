@@ -522,6 +522,137 @@ async def test_playback_uses_the_obs_publish_path(
     assert "publish_path" not in body
 
 
+async def test_relay_reopens_session_after_quota_close(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """OBS stays connected after a quota close. The next edge poll must show the live again."""
+    account = await register(client, email="ingest-reopen@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={
+                "action": "publish",
+                "path": f"live/{public_id}",
+                "protocol": "rtmp",
+                "password": secret,
+            },
+            headers=hook,
+        )
+    ).status_code == 200
+
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    original_id = sessions[0]["id"]
+
+    async with ctx.db.system_tx() as session:
+        await session.execute(
+            text(
+                "UPDATE stream_sessions"
+                " SET status = 'completed', end_reason = 'quota_exhausted', ended_at = now()"
+                " WHERE organization_id = :org AND status = 'live'"
+            ),
+            {"org": account.organization_id},
+        )
+
+    path = f"live/{public_id}/sc_live_again"
+    first = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": path},
+        headers=hook,
+    )
+    assert first.status_code == 200, first.text
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    live = [item for item in sessions if item["status"] == "live"]
+    assert len(live) == 1
+    assert live[0]["id"] == original_id
+    assert live[0]["end_reason"] is None
+
+    second = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": path},
+        headers=hook,
+    )
+    assert second.status_code == 200, second.text
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert len([item for item in sessions if item["status"] == "live"]) == 1
+
+
+async def test_segment_gate_resumes_the_same_live_after_quota_returns(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """A plan bought while OBS is still up must restart cutting on the same session."""
+    account = await register(client, email="ingest-gate-resume@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={
+                "action": "publish",
+                "path": f"live/{public_id}",
+                "protocol": "rtmp",
+                "password": secret,
+            },
+            headers=hook,
+        )
+    ).status_code == 200
+    original_id = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()[
+        "items"
+    ][0]["id"]
+
+    async with ctx.db.system_tx() as session:
+        await session.execute(
+            text(
+                "UPDATE usage_periods"
+                " SET consumed_ms = included_ms, exhausted_at = now()"
+                " WHERE organization_id = :org"
+            ),
+            {"org": account.organization_id},
+        )
+        await session.execute(
+            text(
+                "UPDATE stream_sessions"
+                " SET status = 'completed', end_reason = 'quota_exhausted', ended_at = now()"
+                " WHERE organization_id = :org AND status = 'live'"
+            ),
+            {"org": account.organization_id},
+        )
+
+    path = f"live/{public_id}/sc_live_gate"
+    stopped = await client.get(
+        f"{API}/ingest/hooks/segment-gate", params={"path": path}, headers=hook
+    )
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["stop"] is True
+    assert stopped.json()["record_seconds"] == 0
+    still = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert still[0]["status"] == "completed"
+
+    async with ctx.db.system_tx() as session:
+        await session.execute(
+            text(
+                "UPDATE usage_periods"
+                " SET included_ms = included_ms * 10, exhausted_at = NULL"
+                " WHERE organization_id = :org"
+            ),
+            {"org": account.organization_id},
+        )
+
+    resumed = await client.get(
+        f"{API}/ingest/hooks/segment-gate", params={"path": path}, headers=hook
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["stop"] is False
+    assert resumed.json()["record_seconds"] == 300
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    live = [item for item in sessions if item["status"] == "live"]
+    assert len(live) == 1
+    assert live[0]["id"] == original_id
+
+
 async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True
