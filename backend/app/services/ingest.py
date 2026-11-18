@@ -86,13 +86,12 @@ def endpoints_for(
 ) -> IngestEndpoints:
     """Values shown in the product UI / OBS.
 
-    RTMP URL   = one stable edge URL for every org (OBS Server field).
-    Stream Key = {public_id}/{secret}  (shown once) — routes to the org spot.
-    instance_rtmp_url is ignored for the UI (internal relay target only).
+    RTMP URL   = this live's own spot (`rtmp://<ip>:1935/live`). Empty until that
+    instance is up. The shared edge is not an OBS server.
+    Stream Key = {public_id}/{secret}  (shown once).
     """
     from app.services.ingest_nodes import ingest_api_url
 
-    _ = instance_rtmp_url  # dedicated IP is never shown to the user
     stream_key = f"{public_id}/{secret}" if secret else None
     srt: str | None = None
     host = (settings.ingest_public_host or "").strip() or None
@@ -104,7 +103,7 @@ def endpoints_for(
             srt = srt.format(public_id=public_id, secret=secret)
     return IngestEndpoints(
         ingest_api_url=ingest_api_url(settings),
-        rtmps_url=settings.edge_rtmp_url,
+        rtmps_url=(instance_rtmp_url or None),
         srt_url=srt,
         stream_key=stream_key,
         online=settings.ingest_online,
@@ -225,6 +224,7 @@ async def open_session_for_publish(
     key: StreamKey,
     protocol: IngestProtocol,
     remote_ip: str | None,
+    ingest_node_id: uuid.UUID | None = None,
 ) -> StreamSession:
     """Start (or resume) a live session when MediaMTX accepts a publisher."""
     entitlement = await entitlements.get_entitlement(session, key.organization_id)
@@ -249,10 +249,21 @@ async def open_session_for_publish(
             .limit(1)
         )
     ).scalar_one_or_none()
+    # A second live on another spot must not reuse the session already bound
+    # to a different instance.
+    if (
+        existing is not None
+        and ingest_node_id is not None
+        and existing.ingest_node_id is not None
+        and existing.ingest_node_id != ingest_node_id
+    ):
+        existing = None
     if existing is not None:
         existing.status = StreamSessionStatus.LIVE
         existing.protocol = protocol
         existing.last_media_at = now
+        if existing.ingest_node_id is None and ingest_node_id is not None:
+            existing.ingest_node_id = ingest_node_id
         session.add(
             StreamConnection(
                 id=uuid7(),

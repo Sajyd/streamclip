@@ -137,8 +137,7 @@ async function Settings() {
           <Card>
             <CardTitle>Clé de diffusion</CardTitle>
             <CardDescription>
-              Une URL serveur + votre clé secrète (affichée une seule fois). Au live, l&apos;analyse
-              démarre automatiquement.
+              Le serveur est l&apos;adresse IP de ce live. La clé secrète n&apos;est affichée qu&apos;une fois.
             </CardDescription>
             <div className="mt-5">
               <StreamKeyManager

@@ -4,9 +4,11 @@ import { useActionState, useEffect, useState } from "react";
 
 import {
   issueIngestKeyAction,
+  resolveIngestAction,
   revokeIngestKeyAction,
   rotateIngestKeyAction,
   type IssueKeyState,
+  type ResolveState,
 } from "@/app/actions/ingest";
 import { buttonClasses } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
@@ -124,7 +126,7 @@ function IssueOrRotateForm({
 export function StreamKeyManager({
   canManage,
   ingestOnline,
-  rtmpUrl,
+  rtmpUrl: _rtmpUrl,
   existingKey,
   timeZone,
   defaultLabel,
@@ -142,7 +144,13 @@ export function StreamKeyManager({
   compact?: boolean;
 }) {
   const [freshKey, setFreshKey] = useState<StreamKey | null>(null);
-  const edgeRtmp = freshKey?.rtmps_url ?? existingKey?.rtmps_url ?? rtmpUrl;
+  const [resolveState, resolveAction, resolvePending] = useActionState(
+    resolveIngestAction,
+    { ...idleState } satisfies ResolveState,
+  );
+  const spotUrl =
+    resolveState.resolve?.status === "ready" ? resolveState.resolve.rtmp_url : null;
+  const edgeRtmp = spotUrl ?? freshKey?.rtmps_url ?? existingKey?.rtmps_url ?? null;
   const activeMeta = freshKey ?? existingKey;
   const clearSecret = freshKey?.stream_key ?? null;
 
@@ -155,9 +163,8 @@ export function StreamKeyManager({
     <div className="space-y-4">
       {!compact ? (
         <Notice tone="neutral" title="Connexion OBS / Streamlabs">
-          Une URL serveur unique pour tous. Votre clé secrète identifie votre compte : au démarrage
-          du live, STREAMCLIP vérifie votre abonnement et vos heures restantes, puis analyse le
-          flux automatiquement.
+          Chaque live a sa propre adresse. Collez le serveur de ce live dans OBS (service
+          personnalisé), puis la clé. Un second live démarre une autre instance, avec une autre IP.
         </Notice>
       ) : null}
 
@@ -167,13 +174,46 @@ export function StreamKeyManager({
         </Notice>
       ) : null}
 
-      {edgeRtmp && !compact ? (
+      {edgeRtmp ? (
         <div className="rounded-2xl border border-white/10 bg-ink-950/70 p-4">
           <CopyField label="Serveur OBS / Streamlabs" value={edgeRtmp} />
           <p className="mt-2 text-xs text-ink-400">
-            Service = Personnalisé · collez ensuite votre clé de stream.
+            Service = Personnalisé. Cette IP ne sert qu&apos;à ce live.
           </p>
         </div>
+      ) : null}
+
+      {activeMeta || canManage ? (
+        <form action={resolveAction} className="flex flex-wrap gap-2">
+          <button
+            type="submit"
+            name="new_server"
+            value="false"
+            disabled={resolvePending}
+            className={buttonClasses({ variant: "secondary" })}
+          >
+            {resolvePending ? "Démarrage…" : edgeRtmp ? "Rafraîchir le serveur" : "Démarrer le serveur de ce live"}
+          </button>
+          {edgeRtmp ? (
+            <button
+              type="submit"
+              name="new_server"
+              value="true"
+              disabled={resolvePending}
+              className={buttonClasses({ variant: "secondary" })}
+            >
+              Autre live (nouvelle IP)
+            </button>
+          ) : null}
+        </form>
+      ) : null}
+      {resolveState.status === "error" && resolveState.message ? (
+        <p role="alert" className="text-sm text-danger-400">
+          {resolveState.message}
+        </p>
+      ) : null}
+      {resolveState.resolve && resolveState.resolve.status !== "ready" ? (
+        <p className="text-sm text-ink-300">{resolveState.resolve.message}</p>
       ) : null}
 
       {activeMeta || clearSecret ? (

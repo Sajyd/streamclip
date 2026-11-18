@@ -72,13 +72,14 @@ export async function revokeIngestKeyAction(): Promise<FormState> {
 /** Start dedicated spot for the logged-in org → RTMP URL for OBS. */
 export async function resolveIngestAction(
   _previous: ResolveState,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<ResolveState> {
+  const newServer = formData.get("new_server") === "true";
   const result = await authorized((token) =>
     api<IngestResolve>("/ingest/resolve", {
       method: "POST",
       token,
-      body: {},
+      body: { new_server: newServer },
     }),
   );
   if (!result.ok) {

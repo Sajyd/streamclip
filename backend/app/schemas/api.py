@@ -647,6 +647,8 @@ class IngestResolveRequest(ApiModel):
     # Full OBS stream key: `{public_id}/{secret}` (shown once at issue time).
     # Optional when the caller is authenticated — resolve uses their org.
     stream_key: Annotated[str | None, Field(default=None, min_length=16, max_length=256)] = None
+    # Launch another spot when the current one already has a live.
+    new_server: bool = False
 
 
 class IngestResolveOut(ApiModel):

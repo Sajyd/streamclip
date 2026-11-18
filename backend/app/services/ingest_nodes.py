@@ -1,12 +1,11 @@
-"""Dedicated compute EC2 nodes (t4g.small spot) per organization (all plans).
+"""Dedicated compute EC2 nodes (t4g.small spot), one public IP per live.
 
-OBS always connects to the shared edge RTMP URL. On publish, the API
-authenticates the stream key, ensures this org's dedicated spot is up, and the
-edge relays the live stream to that instance for 5-min analysis.
+OBS publishes straight to that spot (`rtmp://<ip>:1935/live`). A second live
+gets another instance. The shared edge is not the media path.
 
 Plan differences are quota hours + social connections only — not infrastructure.
 
-When the publisher disconnects, the node is marked for termination after a
+When the publisher disconnects, that spot is marked for termination after a
 5-minute idle margin.
 """
 
@@ -20,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -106,6 +105,98 @@ async def get_dedicated_node(
     ).scalar_one_or_none()
 
 
+def _name_filter(organization_id: uuid.UUID):
+    prefix = _node_name(organization_id)
+    return or_(IngestNode.name == prefix, IngestNode.name.startswith(f"{prefix}-"))
+
+
+async def list_active_dedicated_nodes(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> list[IngestNode]:
+    """Ready, starting, or draining spots for this org (every live slot)."""
+    rows = (
+        await session.execute(
+            select(IngestNode)
+            .where(
+                _name_filter(organization_id),
+                IngestNode.kind == IngestNodeKind.DEDICATED,
+                IngestNode.status.in_(
+                    (
+                        IngestNodeStatus.STARTING,
+                        IngestNodeStatus.READY,
+                        IngestNodeStatus.DRAINING,
+                    )
+                ),
+            )
+            .order_by(IngestNode.created_at.asc())
+        )
+    ).scalars()
+    return list(rows)
+
+
+async def open_node_ids(session: AsyncSession, organization_id: uuid.UUID) -> set[uuid.UUID]:
+    """Spots that already have a live attached — they cannot take another stream."""
+    from app.models.enums import StreamSessionStatus
+    from app.models.media import StreamSession
+
+    rows = (
+        await session.execute(
+            select(StreamSession.ingest_node_id).where(
+                StreamSession.organization_id == organization_id,
+                StreamSession.ingest_node_id.is_not(None),
+                StreamSession.status.in_(
+                    (
+                        StreamSessionStatus.PENDING,
+                        StreamSessionStatus.LIVE,
+                        StreamSessionStatus.INTERRUPTED,
+                        StreamSessionStatus.FINALIZING,
+                    )
+                ),
+            )
+        )
+    ).scalars()
+    return {node_id for node_id in rows if node_id is not None}
+
+
+async def find_node_by_hostname(session: AsyncSession, host: str | None) -> IngestNode | None:
+    """The spot whose public IP made the MediaMTX auth call."""
+    cleaned = (host or "").strip()
+    if not cleaned:
+        return None
+    return (
+        await session.execute(
+            select(IngestNode).where(
+                IngestNode.public_hostname == cleaned,
+                IngestNode.kind == IngestNodeKind.DEDICATED,
+                IngestNode.status.in_(
+                    (
+                        IngestNodeStatus.STARTING,
+                        IngestNodeStatus.READY,
+                        IngestNodeStatus.DRAINING,
+                    )
+                ),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def preferred_ready_node(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> IngestNode | None:
+    """Free ready spot if one is idle, otherwise any ready spot."""
+    nodes = await list_active_dedicated_nodes(session, organization_id)
+    busy = await open_node_ids(session, organization_id)
+    ready = [
+        node
+        for node in nodes
+        if node.status is IngestNodeStatus.READY and node.public_hostname
+    ]
+    for node in ready:
+        if node.id not in busy:
+            return node
+    return ready[0] if ready else None
+
+
 async def get_dedicated_node_row(
     session: AsyncSession, organization_id: uuid.UUID
 ) -> IngestNode | None:
@@ -161,111 +252,45 @@ async def assert_can_go_live(session: AsyncSession, organization_id: uuid.UUID) 
         )
 
 
-async def ensure_dedicated_node(
+def _fresh_node(
+    settings: Settings, *, organization_id: uuid.UUID, name: str, now: datetime
+) -> IngestNode:
+    return IngestNode(
+        id=uuid7(),
+        name=name,
+        kind=IngestNodeKind.DEDICATED,
+        status=IngestNodeStatus.STARTING,
+        region=(
+            settings.ingest_ec2_region
+            or settings.s3_region
+            or settings.bedrock_region
+            or "eu-north-1"
+        ),
+        instance_type=settings.ingest_ec2_instance_type or "t4g.small",
+        public_hostname=None,
+        capacity_streams=1,
+        active_streams=0,
+        launched_at=None,
+        details={
+            "organization_id": str(organization_id),
+            "spot": True,
+            "rtmp_port": RTMP_PORT,
+            "analysis_port": ANALYSIS_PORT,
+            "starting_since": now.isoformat(),
+        },
+    )
+
+
+async def _provision_node(
     session: AsyncSession,
     settings: Settings,
-    *,
+    node: IngestNode,
     organization_id: uuid.UUID,
-    start: bool = True,
+    now: datetime,
 ) -> IngestNode:
-    """Return the org's dedicated spot; launch (or relaunch) when needed.
-
-    Gated by active subscription + remaining analysis hours. Reuses the unique
-    `dedicated-{org}` row across TERMINATED/LOST so a new RTMP publish always
-    gets a fresh spot after idle shutdown.
-    """
-    await assert_can_go_live(session, organization_id)
-    now = datetime.now(UTC)
-    existing = await get_dedicated_node(session, organization_id)
-    if (
-        existing is not None
-        and existing.public_hostname
-        and existing.status in (IngestNodeStatus.READY, IngestNodeStatus.DRAINING)
-    ):
-        # Resume within the idle margin: cancel shutdown, keep the same unique host.
-        details = _details(existing)
-        details.pop("terminate_after", None)
-        details.pop("starting_since", None)
-        existing.details = details
-        existing.status = IngestNodeStatus.READY
-        existing.last_heartbeat_at = now
-        await session.flush()
-        return existing
-    if (
-        existing is not None
-        and existing.status is IngestNodeStatus.STARTING
-        and not _starting_is_stale(existing, now=now)
-    ):
-        return existing
-    if not start:
-        if existing is not None:
-            return existing
-        raise LookupError("no_dedicated_node")
-
-    # Prefer the unique name row (even TERMINATED/LOST) over inserting a duplicate.
-    node = existing or await get_dedicated_node_row(session, organization_id)
-    if node is None:
-        node = IngestNode(
-            id=uuid7(),
-            name=_node_name(organization_id),
-            kind=IngestNodeKind.DEDICATED,
-            status=IngestNodeStatus.STARTING,
-            region=(
-                settings.ingest_ec2_region
-                or settings.s3_region
-                or settings.bedrock_region
-                or "eu-north-1"
-            ),
-            instance_type=settings.ingest_ec2_instance_type or "t4g.small",
-            public_hostname=None,
-            capacity_streams=1,
-            active_streams=0,
-            launched_at=None,
-            details={
-                "organization_id": str(organization_id),
-                "spot": True,
-                "rtmp_port": RTMP_PORT,
-                "analysis_port": ANALYSIS_PORT,
-                "starting_since": now.isoformat(),
-            },
-        )
-        session.add(node)
-    else:
-        # Relaunch: clear previous instance so a new spot is provisioned.
-        if node.instance_id and node.status in (
-            IngestNodeStatus.TERMINATED,
-            IngestNodeStatus.LOST,
-            IngestNodeStatus.STARTING,
-        ):
-            # Best-effort: previous instance may already be gone.
-            try:
-                await get_launcher(settings).terminate(instance_id=node.instance_id)
-            except Exception as exc:  # noqa: BLE001
-                log.info(
-                    "ingest_spot_prelaunch_terminate_ignored",
-                    instance_id=node.instance_id,
-                    error=str(exc)[:200],
-                )
-        node.status = IngestNodeStatus.STARTING
-        node.public_hostname = None
-        node.instance_id = None
-        node.terminated_at = None
-        details = _details(node)
-        details["organization_id"] = str(organization_id)
-        details["spot"] = True
-        details["rtmp_port"] = RTMP_PORT
-        details["analysis_port"] = ANALYSIS_PORT
-        details["starting_since"] = now.isoformat()
-        details.pop("terminate_after", None)
-        details.pop("launch_error", None)
-        node.details = details
-    await session.flush()
-
     launcher = get_launcher(settings)
     try:
-        launched = await launcher.launch(
-            organization_id=organization_id, node_name=node.name
-        )
+        launched = await launcher.launch(organization_id=organization_id, node_name=node.name)
     except Exception as exc:
         log.error("ingest_spot_launch_failed", organization_id=str(organization_id), error=str(exc))
         node.status = IngestNodeStatus.LOST
@@ -314,18 +339,153 @@ async def ensure_dedicated_node(
     return node
 
 
+async def _ensure_extra_slot(
+    session: AsyncSession,
+    settings: Settings,
+    organization_id: uuid.UUID,
+    now: datetime,
+) -> IngestNode:
+    """Another live: reuse an idle spot, otherwise launch a new IP."""
+    busy = await open_node_ids(session, organization_id)
+    if busy:
+        entitlement = await entitlements.get_entitlement(session, organization_id)
+        if len(busy) >= entitlement.plan.max_concurrent_streams:
+            raise PermissionDeniedError(
+                "Votre offre n'autorise pas un second live en même temps.",
+                code="concurrent_stream_limit",
+            )
+    for node in await list_active_dedicated_nodes(session, organization_id):
+        if node.id in busy:
+            continue
+        if node.public_hostname and node.status in (
+            IngestNodeStatus.READY,
+            IngestNodeStatus.DRAINING,
+        ):
+            details = _details(node)
+            details.pop("terminate_after", None)
+            node.details = details
+            node.status = IngestNodeStatus.READY
+            node.last_heartbeat_at = now
+            await session.flush()
+            return node
+        if node.status is IngestNodeStatus.STARTING and not _starting_is_stale(node, now=now):
+            return node
+    node = _fresh_node(
+        settings,
+        organization_id=organization_id,
+        name=f"{_node_name(organization_id)}-{uuid.uuid4().hex[:8]}",
+        now=now,
+    )
+    session.add(node)
+    await session.flush()
+    return await _provision_node(session, settings, node, organization_id, now)
+
+
+async def ensure_dedicated_node(
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    organization_id: uuid.UUID,
+    start: bool = True,
+    additional: bool = False,
+) -> IngestNode:
+    """Return a spot for this org; launch when needed.
+
+    The primary row `dedicated-{org}` is reused after idle shutdown.
+    `additional=True` gives a second live its own IP when the first spot is busy.
+    """
+    await assert_can_go_live(session, organization_id)
+    now = datetime.now(UTC)
+    if additional:
+        return await _ensure_extra_slot(session, settings, organization_id, now)
+    existing = await get_dedicated_node(session, organization_id)
+    if (
+        existing is not None
+        and existing.public_hostname
+        and existing.status in (IngestNodeStatus.READY, IngestNodeStatus.DRAINING)
+    ):
+        # Resume within the idle margin: cancel shutdown, keep the same unique host.
+        details = _details(existing)
+        details.pop("terminate_after", None)
+        details.pop("starting_since", None)
+        existing.details = details
+        existing.status = IngestNodeStatus.READY
+        existing.last_heartbeat_at = now
+        await session.flush()
+        return existing
+    if (
+        existing is not None
+        and existing.status is IngestNodeStatus.STARTING
+        and not _starting_is_stale(existing, now=now)
+    ):
+        return existing
+    if not start:
+        if existing is not None:
+            return existing
+        raise LookupError("no_dedicated_node")
+
+    # Prefer the unique name row (even TERMINATED/LOST) over inserting a duplicate.
+    node = existing or await get_dedicated_node_row(session, organization_id)
+    if node is None:
+        node = _fresh_node(
+            settings,
+            organization_id=organization_id,
+            name=_node_name(organization_id),
+            now=now,
+        )
+        session.add(node)
+    else:
+        # Relaunch: clear previous instance so a new spot is provisioned.
+        if node.instance_id and node.status in (
+            IngestNodeStatus.TERMINATED,
+            IngestNodeStatus.LOST,
+            IngestNodeStatus.STARTING,
+        ):
+            # Best-effort: previous instance may already be gone.
+            try:
+                await get_launcher(settings).terminate(instance_id=node.instance_id)
+            except Exception as exc:  # noqa: BLE001
+                log.info(
+                    "ingest_spot_prelaunch_terminate_ignored",
+                    instance_id=node.instance_id,
+                    error=str(exc)[:200],
+                )
+        node.status = IngestNodeStatus.STARTING
+        node.public_hostname = None
+        node.instance_id = None
+        node.terminated_at = None
+        details = _details(node)
+        details["organization_id"] = str(organization_id)
+        details["spot"] = True
+        details["rtmp_port"] = RTMP_PORT
+        details["analysis_port"] = ANALYSIS_PORT
+        details["starting_since"] = now.isoformat()
+        details.pop("terminate_after", None)
+        details.pop("launch_error", None)
+        node.details = details
+    await session.flush()
+    return await _provision_node(session, settings, node, organization_id, now)
+
+
 async def resolve_for_organization(
     session: AsyncSession,
     settings: Settings,
     *,
     organization_id: uuid.UUID,
+    new_server: bool = False,
 ) -> ResolveResult:
     api = ingest_api_url(settings)
     await assert_can_go_live(session, organization_id)
     try:
         node = await ensure_dedicated_node(
-            session, settings, organization_id=organization_id, start=True
+            session,
+            settings,
+            organization_id=organization_id,
+            start=True,
+            additional=new_server,
         )
+    except PermissionDeniedError:
+        raise
     except Exception:
         return ResolveResult(
             status="unavailable",
@@ -345,17 +505,53 @@ async def resolve_for_organization(
             ".ingest.test"
         )
         if probe and not await asyncio.to_thread(rtmp_port_open, host):
-            return ResolveResult(
-                status="starting",
-                ingest_api_url=api,
-                rtmp_url=rtmp_url_for_host(host),
-                analysis_url=analysis_url_for_host(host),
-                public_hostname=host,
-                node_id=node.id,
-                message=(
-                    "Instance allumée — MediaMTX démarre (≈1 min). "
-                    "Le relay edge réessaiera automatiquement."
-                ),
+            launched_at = node.launched_at or node.created_at
+            if launched_at is not None and launched_at.tzinfo is None:
+                launched_at = launched_at.replace(tzinfo=UTC)
+            still_booting = (
+                launched_at is not None and datetime.now(UTC) - launched_at < timedelta(minutes=3)
+            )
+            if still_booting:
+                return ResolveResult(
+                    status="starting",
+                    ingest_api_url=api,
+                    rtmp_url=rtmp_url_for_host(host),
+                    analysis_url=analysis_url_for_host(host),
+                    public_hostname=host,
+                    node_id=node.id,
+                    message=(
+                        "Instance allumée — MediaMTX démarre (≈1 min). "
+                        "Collez cette URL dans OBS dès que le statut passe à prêt."
+                    ),
+                )
+            # Public IP is recorded but nothing listens: the spot was reclaimed.
+            log.warning("ingest_spot_unreachable", host=host, node_id=str(node.id))
+            node.status = IngestNodeStatus.LOST
+            node.public_hostname = None
+            node.terminated_at = datetime.now(UTC)
+            await session.flush()
+            try:
+                node = await ensure_dedicated_node(
+                    session,
+                    settings,
+                    organization_id=organization_id,
+                    start=True,
+                    additional=new_server,
+                )
+            except PermissionDeniedError:
+                raise
+            except Exception:
+                return ResolveResult(
+                    status="unavailable",
+                    ingest_api_url=api,
+                    rtmp_url=None,
+                    analysis_url=None,
+                    public_hostname=None,
+                    node_id=None,
+                    message="Impossible de démarrer votre instance d'ingestion. Réessayez.",
+                )
+            return await resolve_for_organization(
+                session, settings, organization_id=organization_id, new_server=new_server
             )
         return ResolveResult(
             status="ready",
@@ -364,7 +560,7 @@ async def resolve_for_organization(
             analysis_url=analysis_url_for_host(host),
             public_hostname=host,
             node_id=node.id,
-            message="Instance dédiée prête pour le relay.",
+            message="Serveur prêt. Collez cette URL dans OBS — un live, une IP.",
         )
     if node.status is IngestNodeStatus.STARTING:
         return ResolveResult(
@@ -393,30 +589,46 @@ async def schedule_idle_termination(
     organization_id: uuid.UUID,
     margin: timedelta = IDLE_TERMINATE_MARGIN,
 ) -> IngestNode | None:
-    """After RTMP silence: terminate the spot once `margin` has elapsed."""
-    node = await get_dedicated_node(session, organization_id)
-    if node is None or node.status is IngestNodeStatus.TERMINATED:
-        return None
-    details = _details(node)
-    details["terminate_after"] = (datetime.now(UTC) + margin).isoformat()
-    node.details = details
-    node.status = IngestNodeStatus.DRAINING
-    await session.flush()
-    return node
+    """After RTMP silence: terminate idle spots once `margin` has elapsed.
+
+    A spot that still has an open live stays up.
+    """
+    busy = await open_node_ids(session, organization_id)
+    marked: IngestNode | None = None
+    when = (datetime.now(UTC) + margin).isoformat()
+    for node in await list_active_dedicated_nodes(session, organization_id):
+        if node.id in busy or node.status is IngestNodeStatus.TERMINATED:
+            continue
+        details = _details(node)
+        details["terminate_after"] = when
+        node.details = details
+        node.status = IngestNodeStatus.DRAINING
+        marked = node
+    if marked is not None:
+        await session.flush()
+    return marked
 
 
 async def cancel_idle_termination(
-    session: AsyncSession, *, organization_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    node_id: uuid.UUID | None = None,
 ) -> None:
-    node = await get_dedicated_node(session, organization_id)
-    if node is None:
-        return
-    details = _details(node)
-    if "terminate_after" in details:
+    nodes = await list_active_dedicated_nodes(session, organization_id)
+    changed = False
+    for node in nodes:
+        if node_id is not None and node.id != node_id:
+            continue
+        details = _details(node)
+        if "terminate_after" not in details and node.status is not IngestNodeStatus.DRAINING:
+            continue
         details.pop("terminate_after", None)
         node.details = details
         if node.status is IngestNodeStatus.DRAINING and node.public_hostname:
             node.status = IngestNodeStatus.READY
+        changed = True
+    if changed:
         await session.flush()
 
 

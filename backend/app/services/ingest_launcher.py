@@ -42,9 +42,13 @@ class FakeSpotLauncher:
         self.launched: dict[str, str] = {}
 
     async def launch(self, *, organization_id: uuid.UUID, node_name: str) -> LaunchResult:
-        instance_id = f"i-fake-{organization_id.hex[:12]}"
-        # Unique per org — never a shared fallback.
-        host = f"{organization_id.hex[:12]}.ingest.test"
+        import hashlib
+
+        _ = organization_id
+        # Stable for a given node name (relaunch) and different for each live slot.
+        digest = hashlib.sha256(node_name.encode()).hexdigest()[:12]
+        instance_id = f"i-fake-{digest}"
+        host = f"{digest}.ingest.test"
         self.launched[instance_id] = host
         return LaunchResult(instance_id=instance_id, public_hostname=host)
 

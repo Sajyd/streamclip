@@ -308,9 +308,8 @@ export function OnboardingWizard({
   );
 
   function captureKey(key: StreamKey) {
-    const server = key.rtmps_url ?? ingestRtmpUrl;
-    if (!key.stream_key || !server) return;
-    setCreds({ server, streamKey: key.stream_key });
+    if (!key.stream_key || !key.rtmps_url) return;
+    setCreds({ server: key.rtmps_url, streamKey: key.stream_key });
   }
 
   function wipeSecret() {

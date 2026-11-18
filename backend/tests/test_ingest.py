@@ -34,14 +34,14 @@ async def test_issue_rotate_and_revoke_stream_key(client: httpx.AsyncClient) -> 
     assert body["status"] == "active"
     assert body["stream_key"].startswith(body["public_id"] + "/")
     assert "sc_live_" in body["stream_key"]
-    assert body["rtmps_url"] == "rtmp://edge.ingest.test/live"
+    assert body["rtmps_url"] is None
     assert body["ingest_online"] is True
     clear = body["stream_key"]
 
     again = await client.get(f"{API}/ingest/key", headers=account.headers)
     assert again.status_code == 200
     assert again.json()["stream_key"] is None  # never re-shown
-    assert again.json()["rtmps_url"] == "rtmp://edge.ingest.test/live"
+    assert again.json()["rtmps_url"] is None
     assert again.json()["public_id"] == body["public_id"]
 
     rotated = await client.post(f"{API}/ingest/key/rotate", json={}, headers=account.headers)
@@ -64,7 +64,7 @@ async def test_relay_target_starts_unique_dedicated_spot(
     public_id = issued["public_id"]
     hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
 
-    assert issued["rtmps_url"] == "rtmp://edge.ingest.test/live"
+    assert issued["rtmps_url"] is None
 
     relay = await client.get(
         f"{API}/ingest/hooks/relay-target",
@@ -153,6 +153,50 @@ async def test_relay_relaunches_spot_after_idle_terminate(
         assert node is not None
         assert node.status is IngestNodeStatus.READY
         assert node.public_hostname is not None
+
+
+async def test_second_live_gets_a_different_spot(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """A live already on a spot must not share that IP with the next one."""
+    from sqlalchemy import update
+
+    from app.models.billing import Plan
+
+    async with ctx.db.system_tx() as session:
+        await session.execute(update(Plan).values(max_concurrent_streams=3))
+
+    account = await register(client, email="ingest-second-spot@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    first = await client.post(f"{API}/ingest/resolve", json={}, headers=account.headers)
+    assert first.status_code == 200, first.text
+    host = first.json()["public_hostname"]
+    assert host
+
+    opened = await client.post(
+        f"{API}/ingest/hooks/auth",
+        json={
+            "action": "publish",
+            "path": f"live/{public_id}/{secret}",
+            "protocol": "rtmp",
+            "password": secret,
+            "ip": "203.0.113.9",
+        },
+        headers=hook,
+    )
+    assert opened.status_code == 200, opened.text
+
+    second = await client.post(
+        f"{API}/ingest/resolve",
+        json={"new_server": True},
+        headers=account.headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["public_hostname"] != host
+    assert second.json()["rtmp_url"].startswith("rtmp://")
 
 
 async def test_auth_rejects_exhausted_quota(

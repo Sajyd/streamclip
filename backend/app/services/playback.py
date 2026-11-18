@@ -244,11 +244,13 @@ def _assemble_playback(
 async def playback_for_org(ctx: AppContext, organization_id: uuid.UUID) -> PlaybackInfo:
     async with ctx.db.system_tx() as session:
         stream, key = await _active_session(session, organization_id)
-        node = await ingest_nodes.get_dedicated_node(session, organization_id)
-        if node is None and stream is not None and stream.ingest_node_id:
+        node = None
+        if stream is not None and stream.ingest_node_id:
             from app.models.media import IngestNode
 
             node = await session.get(IngestNode, stream.ingest_node_id)
+        if node is None:
+            node = await ingest_nodes.preferred_ready_node(session, organization_id)
         publish_path = await _publish_path(session, stream) if stream is not None else None
 
     dedicated = node.public_hostname if node and node.status.value == "ready" else None
@@ -284,11 +286,13 @@ async def playback_for_live(ctx: AppContext, live_id: uuid.UUID) -> PlaybackInfo
                     )
                 )
             ).scalar_one_or_none()
-        node = await ingest_nodes.get_dedicated_node(session, stream.organization_id)
-        if node is None and stream.ingest_node_id:
+        node = None
+        if stream.ingest_node_id:
             from app.models.media import IngestNode
 
             node = await session.get(IngestNode, stream.ingest_node_id)
+        if node is None:
+            node = await ingest_nodes.preferred_ready_node(session, stream.organization_id)
         publish_path = await _publish_path(session, stream)
 
     dedicated = node.public_hostname if node and node.status.value == "ready" else None
@@ -328,13 +332,13 @@ def info_to_dict(info: PlaybackInfo, settings: Settings) -> dict[str, Any]:
 def _preview_hosts(
     settings: Settings, *, dedicated_host: str | None
 ) -> list[str]:
-    """Prefer the shared edge (OBS lands there); fall back to the org spot."""
+    """The live is on its own spot. The shared edge is only a fallback."""
     hosts: list[str] = []
-    edge = edge_preview_host(settings)
-    if edge:
-        hosts.append(edge)
-    if dedicated_host and dedicated_host not in hosts:
+    if dedicated_host:
         hosts.append(dedicated_host)
+    edge = edge_preview_host(settings)
+    if edge and edge not in hosts:
+        hosts.append(edge)
     return hosts
 
 
@@ -367,13 +371,15 @@ async def proxy_hls(
     dedicated_host: str | None = None
     dedicated_instance_id: str | None = None
     async with ctx.db.system_tx() as session:
-        node = await ingest_nodes.get_dedicated_node(session, info.organization_id)
-        if node is None and info.session_id:
+        node = None
+        if info.session_id:
             stream = await session.get(StreamSession, info.session_id)
             if stream and stream.ingest_node_id:
                 from app.models.media import IngestNode
 
                 node = await session.get(IngestNode, stream.ingest_node_id)
+        if node is None:
+            node = await ingest_nodes.preferred_ready_node(session, info.organization_id)
         if node and node.status.value == "ready":
             dedicated_host = node.public_hostname
             dedicated_instance_id = node.instance_id

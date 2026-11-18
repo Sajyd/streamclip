@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -95,10 +96,14 @@ def _require_ingest_keys() -> None:
 
 async def _instance_rtmp_for_org(ctx: Ctx, organization_id) -> str | None:
     async with ctx.db.system_tx() as session:
-        node = await ingest_nodes.get_dedicated_node(session, organization_id)
-    if node is not None and node.status.value == "ready" and node.public_hostname:
-        return ingest_nodes.rtmp_url_for_host(node.public_hostname)
-    return None
+        node = await ingest_nodes.preferred_ready_node(session, organization_id)
+    if node is None or node.status.value != "ready" or not node.public_hostname:
+        return None
+    host = node.public_hostname
+    if not host.endswith(".ingest.test"):
+        if not await asyncio.to_thread(ingest_nodes.rtmp_port_open, host):
+            return None
+    return ingest_nodes.rtmp_url_for_host(host)
 
 
 def _key_out(
@@ -109,7 +114,7 @@ def _key_out(
     instance_rtmp_url: str | None = None,
 ) -> StreamKeyOut:
     # Clear secret only right after create/rotate (show-once).
-    # rtmps_url = stable edge URL for OBS (same for every org).
+    # rtmps_url = this live's spot (rtmp://ip:1935/live), empty until it is up.
     endpoints = ingest_service.endpoints_for(
         ctx.settings,
         public_id=key.public_id,
@@ -288,8 +293,13 @@ async def resolve_ingest_post(
 
     org_id = principal.organization_id if isinstance(principal, Principal) else None
     stream_key = body.stream_key if body else None
+    new_server = bool(body.new_server) if body else False
     return await _resolve(
-        ctx, stream_key=stream_key, organization_id=org_id, redirect=False
+        ctx,
+        stream_key=stream_key,
+        organization_id=org_id,
+        redirect=False,
+        new_server=new_server,
     )
 
 
@@ -313,6 +323,7 @@ async def _resolve(
     organization_id,
     redirect: bool,
     html: bool = False,
+    new_server: bool = False,
 ) -> Response:
     _require_ingest_keys()
     clear_key = stream_key
@@ -341,7 +352,7 @@ async def _resolve(
                 code="unauthenticated",
             )
         result = await ingest_nodes.resolve_for_organization(
-            session, ctx.settings, organization_id=org_id
+            session, ctx.settings, organization_id=org_id, new_server=new_server
         )
 
     payload = IngestResolveOut(
@@ -461,11 +472,17 @@ def _is_loopback(ip: str | None) -> bool:
 
 
 @router.post("/ingest/hooks/auth")
-async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
-    """Edge MediaMTX auth: validate stream key + subscription, open session.
+def _caller_ip(request: Request) -> str | None:
+    state_ip = getattr(request.state, "client_ip", None)
+    if isinstance(state_ip, str) and state_ip:
+        return state_ip
+    return request.client.host if request.client else None
 
-    Dedicated spot launch is kicked off asynchronously (see relay-target) so
-    OBS is accepted quickly on the shared edge URL.
+
+async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
+    """Spot MediaMTX auth: the publisher must hit that live's own IP.
+
+    The shared edge is not an ingest target. OBS uses rtmp://<spot-ip>:1935/live.
     """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
@@ -495,12 +512,33 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
             session, public_id=public_id, secret=secret
         )
         await ingest_nodes.assert_can_go_live(session, key.organization_id)
+        caller = _caller_ip(request)
+        node = await ingest_nodes.find_node_by_hostname(session, caller)
+        if node is None and ctx.settings.environment in ("test", "local"):
+            node = await ingest_nodes.get_dedicated_node(session, key.organization_id)
+        if node is None and ctx.settings.environment not in ("test", "local"):
+            raise PermissionDeniedError(
+                "Connectez OBS à l'adresse IP de ce live, pas au serveur partagé.",
+                code="direct_ingest_required",
+            )
+        if node is not None:
+            prefix = f"dedicated-{key.organization_id}"
+            if node.name != prefix and not node.name.startswith(f"{prefix}-"):
+                raise PermissionDeniedError(
+                    "Cette instance n'appartient pas à ce compte.",
+                    code="direct_ingest_required",
+                )
         await ingest_nodes.cancel_idle_termination(
-            session, organization_id=key.organization_id
+            session,
+            organization_id=key.organization_id,
+            node_id=node.id if node is not None else None,
         )
-        node = await ingest_nodes.get_dedicated_node(session, key.organization_id)
         stream = await ingest_service.open_session_for_publish(
-            session, key=key, protocol=protocol, remote_ip=body.ip
+            session,
+            key=key,
+            protocol=protocol,
+            remote_ip=body.ip,
+            ingest_node_id=node.id if node is not None else None,
         )
         if node is not None and stream.ingest_node_id is None:
             stream.ingest_node_id = node.id
@@ -663,25 +701,36 @@ async def mediamtx_event(
         key = await ingest_service.find_key_by_public_id(session, public_id)
         if key is None:
             return IngestEventHookOut(message="ignored")
-        stream = (
-            await session.execute(
-                select(StreamSession)
-                .where(
-                    StreamSession.organization_id == key.organization_id,
-                    StreamSession.stream_key_id == key.id,
-                    StreamSession.status.in_(
-                        (
-                            StreamSessionStatus.PENDING,
-                            StreamSessionStatus.LIVE,
-                            StreamSessionStatus.INTERRUPTED,
-                            StreamSessionStatus.FINALIZING,
-                        )
-                    ),
-                )
-                .order_by(StreamSession.created_at.desc())
-                .limit(1)
+        caller = _caller_ip(request)
+        node = await ingest_nodes.find_node_by_hostname(session, caller)
+        stream_query = (
+            select(StreamSession)
+            .where(
+                StreamSession.organization_id == key.organization_id,
+                StreamSession.stream_key_id == key.id,
+                StreamSession.status.in_(
+                    (
+                        StreamSessionStatus.PENDING,
+                        StreamSessionStatus.LIVE,
+                        StreamSessionStatus.INTERRUPTED,
+                        StreamSessionStatus.FINALIZING,
+                    )
+                ),
             )
-        ).scalar_one_or_none()
+            .order_by(StreamSession.created_at.desc())
+            .limit(1)
+        )
+        if node is not None:
+            bound = (
+                await session.execute(
+                    stream_query.where(StreamSession.ingest_node_id == node.id)
+                )
+            ).scalar_one_or_none()
+            stream = bound
+        else:
+            stream = None
+        if stream is None:
+            stream = (await session.execute(stream_query)).scalar_one_or_none()
         if stream is None:
             return IngestEventHookOut(message="no_open_session")
         stream_session_id = stream.id
@@ -711,7 +760,9 @@ async def mediamtx_event(
             stream.last_media_at = datetime.now(UTC)
             await session.flush()
             await ingest_nodes.cancel_idle_termination(
-                session, organization_id=key.organization_id
+                session,
+                organization_id=key.organization_id,
+                node_id=node.id if node is not None else stream.ingest_node_id,
             )
         elif event in ("processed", "tick") and body.processed_ms:
             # Heartbeat only — do not bill (quota = analyzed 5-min segments).
@@ -726,7 +777,9 @@ async def mediamtx_event(
         elif event in ("publisher_ready", "start"):
             await ingest_service.resume_session(session, stream)
             await ingest_nodes.cancel_idle_termination(
-                session, organization_id=key.organization_id
+                session,
+                organization_id=key.organization_id,
+                node_id=node.id if node is not None else stream.ingest_node_id,
             )
         _pipeline_audit(
             session,
@@ -808,7 +861,9 @@ async def segment_analysis_persist(
                 media_end_ms=target,
             )
         await ingest_nodes.cancel_idle_termination(
-            session, organization_id=stream.organization_id
+            session,
+            organization_id=stream.organization_id,
+            node_id=stream.ingest_node_id,
         )
         _pipeline_audit(
             session,

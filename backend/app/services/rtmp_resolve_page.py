@@ -1,7 +1,7 @@
-"""HTML landing for GET /rtmp?key=… — status helper, not the OBS server URL.
+"""HTML landing for GET /rtmp?key=… 
 
-OBS must use the stable edge RTMP URL + stream key. This page only confirms
-quota / dedicated spot readiness for support and debugging.
+When the spot is ready, the page shows the RTMP URL to paste into OBS.
+That URL is this live's own IP, not a shared server.
 """
 
 from __future__ import annotations
@@ -30,21 +30,15 @@ def render_resolve_page(
         if status == "starting"
         else ""
     )
+    _ = edge_rtmp_url
     edge_block = ""
-    if edge_rtmp_url:
-        edge_block = f"""
-        <div class="card">
-          <p class="label">Serveur OBS (toujours le même)</p>
-          <code>{html.escape(edge_rtmp_url)}</code>
-          <p class="hint">Dans OBS : Service = Personnalisé. Collez cette URL + votre clé de stream. Le backend relaie vers votre EC2 dédiée.</p>
-        </div>
-        """
     dedicated_block = ""
     if rtmp_url and status == "ready":
         dedicated_block = f"""
         <div class="card">
-          <p class="label">Cible relay interne (ne pas coller dans OBS)</p>
+          <p class="label">Serveur OBS de ce live</p>
           <code>{html.escape(rtmp_url)}</code>
+          <p class="hint">Service = Personnalisé. Collez cette URL et votre clé. Un autre live reçoit une autre IP.</p>
         </div>
         """
     key_block = (

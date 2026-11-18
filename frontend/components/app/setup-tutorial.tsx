@@ -29,7 +29,7 @@ const OBS_STEPS: { id: ObsStep; label: string }[] = [
 export function SetupTutorial({
   canManage,
   ingestOnline,
-  rtmpUrl,
+  rtmpUrl: _rtmpUrl,
   existingKey,
   timeZone,
   initialPlatform = "obs",
@@ -44,9 +44,9 @@ export function SetupTutorial({
   const [platform, setPlatform] = useState<Platform>(initialPlatform);
   const [obsStep, setObsStep] = useState<ObsStep>("download");
   const [creds, setCreds] = useState<Creds | null>(() => {
-    if (existingKey?.stream_key && (existingKey.rtmps_url || rtmpUrl)) {
+    if (existingKey?.stream_key && existingKey.rtmps_url) {
       return {
-        server: existingKey.rtmps_url ?? rtmpUrl!,
+        server: existingKey.rtmps_url,
         streamKey: existingKey.stream_key,
       };
     }
@@ -55,12 +55,12 @@ export function SetupTutorial({
 
   const onIssued = useCallback(
     (key: StreamKey) => {
-      const server = key.rtmps_url ?? rtmpUrl;
+      const server = key.rtmps_url;
       if (key.stream_key && server) {
         setCreds({ server, streamKey: key.stream_key });
       }
     },
-    [rtmpUrl],
+    [],
   );
 
   return (
