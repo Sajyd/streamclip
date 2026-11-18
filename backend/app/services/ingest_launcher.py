@@ -244,6 +244,22 @@ trap 'rm -f "$PIDFILE"' EXIT
 # shellcheck disable=SC1091
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
 while true; do
+  # Do not cut another window once the plan hour is used.
+  GATE_URL="${{EVENT_URL%/event}}/segment-gate"
+  GATE=""
+  for _try in 1 2 3; do
+    GATE=$(curl -fsS --max-time 15 -G -H "X-Streamclip-Ingest-Secret: $HOOK" \\
+      --data-urlencode "path=$PATH_NAME" "$GATE_URL" || true)
+    [ -n "$GATE" ] && break
+    sleep 2
+  done
+  STOP=$(printf '%s' "$GATE" | sed -n 's/.*"stop"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p')
+  RECORD_S=$(printf '%s' "$GATE" | sed -n 's/.*"record_seconds"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')
+  if [ "$STOP" != "false" ] || [ -z "$RECORD_S" ] || [ "$RECORD_S" -le 0 ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) quota_stop path=$PATH_NAME" >>"$LOG" || true
+    sleep 30
+    continue
+  fi
   # Unique S3 folder per live (= stream session id written on publisher_ready).
   LIVE_ID=$(cat "$SESSIONFILE" 2>/dev/null | tr -d '[:space:]' || true)
   [ -n "$LIVE_ID" ] || LIVE_ID="$SAFE"
@@ -257,7 +273,7 @@ while true; do
       -rw_timeout 15000000 \\
       -fflags +genpts+igndts \\
       -i "rtmp://127.0.0.1:1935/${{PATH_NAME}}" \\
-      -t "$WINDOW_S" \\
+      -t "$RECORD_S" \\
       -map 0 \\
       -c copy \\
       -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof \\
@@ -283,11 +299,18 @@ while true; do
     if [ -n "${{S3_BUCKET:-}}" ]; then
       aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" || true
     fi
-    # Ack upload on API (no Vercel analysis). Analysis runs on :8080 below.
-    curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \\
+    # Ack upload on API. A quota_exhausted ack must not be analyzed.
+    ACK=$(curl -fsS --max-time 20 -X POST -H "Content-Type: application/json" \\
       -H "X-Streamclip-Ingest-Secret: $HOOK" \\
-      -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":300000}}" \\
-      "$EVENT_URL" || true
+      -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":$((RECORD_S * 1000))}}" \\
+      "$EVENT_URL" || true)
+    if printf '%s' "$ACK" | grep -q 'quota_exhausted'; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) quota_drop path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
+      rm -f "$OUT" "$PART" "$ANALYZE"
+      flock -u 200
+      exec 200>&-
+      continue
+    fi
     mv -f "$OUT" "$ANALYZE"
     # Hand local file to :8080 — frames / ASR / Luna on this EC2, then DB via API.
     curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \\

@@ -290,6 +290,7 @@ async def open_session_for_publish(
         id=uuid7(),
         organization_id=key.organization_id,
         stream_key_id=key.id,
+        ingest_node_id=ingest_node_id,
         status=StreamSessionStatus.LIVE,
         protocol=protocol,
         started_at=now,
@@ -311,6 +312,51 @@ async def open_session_for_publish(
     )
     await session.flush()
     return stream
+
+
+async def ensure_session_for_publisher(
+    session: AsyncSession,
+    *,
+    key: StreamKey,
+    protocol: IngestProtocol,
+    remote_ip: str | None,
+    ingest_node_id: uuid.UUID | None = None,
+) -> tuple[StreamSession, bool]:
+    """Return the open session for this key, creating one when the publisher is still connected.
+
+    A quota close or a missed disconnect can end the session while OBS stays
+    on the edge. The dashboard only treats an open session as "en direct", so
+    the next relay poll or publisher_ready must open a new one.
+    """
+    existing = (
+        await session.execute(
+            select(StreamSession)
+            .where(
+                StreamSession.organization_id == key.organization_id,
+                StreamSession.stream_key_id == key.id,
+                StreamSession.status.in_(tuple(OPEN_SESSION_STATUSES)),
+            )
+            .order_by(StreamSession.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if ingest_node_id is not None and existing.ingest_node_id is None:
+            existing.ingest_node_id = ingest_node_id
+        if existing.status is StreamSessionStatus.INTERRUPTED:
+            await resume_session(session, existing)
+        else:
+            await session.flush()
+        return existing, False
+
+    created = await open_session_for_publish(
+        session,
+        key=key,
+        protocol=protocol,
+        remote_ip=remote_ip,
+        ingest_node_id=ingest_node_id,
+    )
+    return created, True
 
 
 async def interrupt_session(
@@ -428,15 +474,17 @@ async def record_processed_tick(
     *,
     processed_ms: int,
     media_end_ms: int | None = None,
+    idempotency_key: str | None = None,
 ) -> entitlements.QuotaSnapshot:
-    """Charge analyzed media time (−5 min per segment) and stop if quota exhausted."""
+    """Charge analyzed media time and stop once the plan threshold is reached."""
     entitlement = await entitlements.get_entitlement(session, stream.organization_id)
-    if processed_ms <= 0 or entitlement.quota.exhausted:
+    bill = min(processed_ms, entitlement.quota.remaining_ms)
+    if bill <= 0 or entitlement.quota.exhausted:
         if entitlement.quota.exhausted and stream.status in OPEN_SESSION_STATUSES:
             await close_session(session, stream, reason=StreamEndReason.QUOTA_EXHAUSTED)
         return entitlement.quota
     previous = stream.processed_ms
-    stream.processed_ms = previous + processed_ms
+    stream.processed_ms = previous + bill
     if media_end_ms is not None:
         stream.media_duration_ms = max(stream.media_duration_ms, media_end_ms)
     stream.last_media_at = datetime.now(UTC)
@@ -444,11 +492,12 @@ async def record_processed_tick(
     snapshot = await entitlements.record_usage(
         session,
         organization_id=stream.organization_id,
-        quantity_ms=processed_ms,
-        idempotency_key=f"session:{stream.id}:analyzed:{previous}:{processed_ms}",
+        quantity_ms=bill,
+        idempotency_key=idempotency_key
+        or f"session:{stream.id}:analyzed:{previous}:{bill}",
         stream_session_id=stream.id,
         media_start_ms=previous,
-        media_end_ms=previous + processed_ms,
+        media_end_ms=previous + bill,
     )
     # Open analysis windows for each completed ~5 min slice of processed media.
     from app.services import analysis as analysis_service

@@ -726,10 +726,19 @@ class IngestEventHookOut(ApiModel):
     """Ack for MediaMTX / agent event hooks.
 
     `stream_session_id` lets the on-box agent key S3 under a unique live folder.
+    `stop` tells the spot to record and analyze nothing further.
     """
 
     message: str = "ok"
     stream_session_id: uuid.UUID | None = None
+    stop: bool = False
+
+
+class SegmentGateOut(ApiModel):
+    """Whether the spot may cut another window, and for how many seconds."""
+
+    stop: bool
+    record_seconds: int = 0
 
 
 class SegmentAnalysisMomentIn(ApiModel):

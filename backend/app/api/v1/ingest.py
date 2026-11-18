@@ -40,6 +40,7 @@ from app.schemas.api import (
     Message,
     SegmentAnalysisHookOut,
     SegmentAnalysisHookRequest,
+    SegmentGateOut,
     StreamKeyIssueRequest,
     StreamKeyOut,
     StreamSessionList,
@@ -711,25 +712,40 @@ async def relay_target(
                 rtmp_push_url=None,
                 message=str(exc.message) if hasattr(exc, "message") else "Accès refusé.",
             )
-        stream = (
-            await session.execute(
-                select(StreamSession)
-                .where(
-                    StreamSession.organization_id == key.organization_id,
-                    StreamSession.stream_key_id == key.id,
-                    StreamSession.status.in_(
-                        (
-                            StreamSessionStatus.PENDING,
-                            StreamSessionStatus.LIVE,
-                            StreamSessionStatus.INTERRUPTED,
-                            StreamSessionStatus.FINALIZING,
-                        )
-                    ),
-                )
-                .order_by(StreamSession.created_at.desc())
-                .limit(1)
+        stream, opened = await ingest_service.ensure_session_for_publisher(
+            session,
+            key=key,
+            protocol=IngestProtocol.RTMP,
+            remote_ip=None,
+            ingest_node_id=result.node_id,
+        )
+        if opened:
+            from app.tasks.queue import enqueue
+
+            await enqueue(
+                session,
+                "ingest.ensure_node",
+                {
+                    "organization_id": str(key.organization_id),
+                    "stream_session_id": str(stream.id),
+                },
+                queue="ingest",
+                organization_id=key.organization_id,
+                idempotency_key=f"ensure-node:{key.organization_id}:{stream.id}",
             )
-        ).scalar_one_or_none()
+            _pipeline_audit(
+                session,
+                "ingest.publish_auth",
+                organization_id=key.organization_id,
+                stream_id=stream.id,
+                request=request,
+                details={
+                    "path": path,
+                    "protocol": "rtmp",
+                    "via": "relay",
+                    "node_id": str(result.node_id) if result.node_id else None,
+                },
+            )
         push_url: str | None = None
         if result.status == "ready" and result.rtmp_url:
             push = result.rtmp_url.rstrip("/")
@@ -788,6 +804,8 @@ async def mediamtx_event(
     if public_id is None:
         return IngestEventHookOut(message="ignored")
     stream_session_id = None
+    hook_message = "ok"
+    hook_stop = False
     async with ctx.db.system_tx() as session:
         key = await ingest_service.find_key_by_public_id(session, public_id)
         if key is None:
@@ -822,10 +840,36 @@ async def mediamtx_event(
             stream = None
         if stream is None:
             stream = (await session.execute(stream_query)).scalar_one_or_none()
+        event = body.event.lower()
+        if stream is None and event in ("publisher_ready", "start", "segment", "processed", "tick"):
+            # OBS can stay connected after the previous session was closed.
+            try:
+                stream, opened = await ingest_service.ensure_session_for_publisher(
+                    session,
+                    key=key,
+                    protocol=_PROTOCOL_MAP.get(body.protocol.lower(), IngestProtocol.RTMP),
+                    remote_ip=body.ip,
+                    ingest_node_id=node.id if node is not None else None,
+                )
+            except PermissionDeniedError:
+                return IngestEventHookOut(message="no_open_session")
+            if opened:
+                from app.tasks.queue import enqueue
+
+                await enqueue(
+                    session,
+                    "ingest.ensure_node",
+                    {
+                        "organization_id": str(key.organization_id),
+                        "stream_session_id": str(stream.id),
+                    },
+                    queue="ingest",
+                    organization_id=key.organization_id,
+                    idempotency_key=f"ensure-node:{key.organization_id}:{stream.id}",
+                )
         if stream is None:
             return IngestEventHookOut(message="no_open_session")
         stream_session_id = stream.id
-        event = body.event.lower()
         if event in ("publisher_disconnect", "end", "stop"):
             # Soft interrupt: MediaMTX flaps / encoder stalls must not end an
             # otherwise healthy live. Finalize only after a grace window.
@@ -846,15 +890,38 @@ async def mediamtx_event(
             # Keep the spot warm during the grace window (finalize / stale
             # closer schedules termination if the publisher never returns).
         elif event == "segment" and body.storage_key and body.sequence is not None:
-            # Upload ack only. Quota is charged when :8080 posts segment-analysis.
-            await ingest_service.resume_session(session, stream)
-            stream.last_media_at = datetime.now(UTC)
-            await session.flush()
-            await ingest_nodes.cancel_idle_termination(
-                session,
-                organization_id=key.organization_id,
-                node_id=node.id if node is not None else stream.ingest_node_id,
-            )
+            # Bill this window now, capped at the plan. The spot must not cut or
+            # analyze another window once nothing remains.
+            from app.services import entitlements
+
+            ent = await entitlements.get_entitlement(session, key.organization_id)
+            if ent.quota.exhausted or ent.quota.remaining_ms <= 0:
+                hook_message = "quota_exhausted"
+                hook_stop = True
+            else:
+                bill = min(body.processed_ms or 300_000, ent.quota.remaining_ms)
+                snapshot = await ingest_service.record_processed_tick(
+                    session,
+                    stream,
+                    processed_ms=bill,
+                    media_end_ms=(stream.processed_ms or 0) + bill,
+                    idempotency_key=f"session:{stream.id}:segment:{body.sequence}",
+                )
+                hook_stop = snapshot.exhausted
+                if stream.status in (
+                    StreamSessionStatus.PENDING,
+                    StreamSessionStatus.LIVE,
+                    StreamSessionStatus.INTERRUPTED,
+                    StreamSessionStatus.FINALIZING,
+                ):
+                    await ingest_service.resume_session(session, stream)
+                    stream.last_media_at = datetime.now(UTC)
+                    await session.flush()
+                    await ingest_nodes.cancel_idle_termination(
+                        session,
+                        organization_id=key.organization_id,
+                        node_id=node.id if node is not None else stream.ingest_node_id,
+                    )
         elif event in ("processed", "tick") and body.processed_ms:
             # Heartbeat only — do not bill (quota = analyzed 5-min segments).
             await ingest_service.resume_session(session, stream)
@@ -887,7 +954,33 @@ async def mediamtx_event(
             },
         )
         await ingest_nodes.terminate_due_nodes(session, ctx.settings)
-    return IngestEventHookOut(message="ok", stream_session_id=stream_session_id)
+    return IngestEventHookOut(
+        message=hook_message, stop=hook_stop, stream_session_id=stream_session_id
+    )
+
+
+@router.get("/ingest/hooks/segment-gate", response_model=SegmentGateOut)
+async def segment_gate(
+    request: Request,
+    ctx: Ctx,
+    path: Annotated[str, Query(min_length=1, max_length=255)],
+) -> SegmentGateOut:
+    """Spot asks this before every ffmpeg window. Past the plan, it must not cut."""
+    _require_hook_secret(request, ctx)
+    public_id = _public_id_from_path(path)
+    if public_id is None:
+        return SegmentGateOut(stop=True, record_seconds=0)
+    async with ctx.db.system_tx() as session:
+        key = await ingest_service.find_key_by_public_id(session, public_id)
+        if key is None:
+            return SegmentGateOut(stop=True, record_seconds=0)
+        from app.services import entitlements
+
+        ent = await entitlements.get_entitlement(session, key.organization_id)
+        remaining = ent.quota.remaining_ms
+        if ent.quota.exhausted or remaining <= 0:
+            return SegmentGateOut(stop=True, record_seconds=0)
+        return SegmentGateOut(stop=False, record_seconds=min(300, remaining // 1000))
 
 
 @router.post("/ingest/hooks/segment-analysis", response_model=SegmentAnalysisHookOut)
@@ -927,6 +1020,24 @@ async def segment_analysis_persist(
         stream = await session.get(StreamSession, body.stream_session_id)
         if stream is None:
             raise NotFoundError("Session introuvable.", code="stream_not_found")
+        from sqlalchemy import select as sa_select
+
+        from app.models.billing import UsageRecord
+        from app.services import entitlements
+
+        charge_key = f"session:{stream.id}:segment:{body.sequence}"
+        already_billed = (
+            await session.execute(
+                sa_select(UsageRecord.id).where(UsageRecord.idempotency_key == charge_key)
+            )
+        ).scalar_one_or_none()
+        ent = await entitlements.get_entitlement(session, stream.organization_id)
+        if already_billed is None and (ent.quota.exhausted or ent.quota.remaining_ms <= 0):
+            return SegmentAnalysisHookOut(
+                message="quota_exhausted",
+                moments=0,
+                stream_session_id=stream.id,
+            )
         await ingest_service.resume_session(session, stream)
         analysis_log = _segment_analysis_details(body, moments)
         await persist_segment_analysis(
@@ -943,15 +1054,14 @@ async def segment_analysis_persist(
             provider=body.provider or "onbox",
             diagnostics=analysis_log,
         )
-        already = stream.processed_ms or 0
-        target = (body.sequence + 1) * WINDOW_MS
-        unbilled = max(0, target - already)
-        if unbilled > 0:
+        if already_billed is None:
+            bill = min(WINDOW_MS, ent.quota.remaining_ms)
             await ingest_service.record_processed_tick(
                 session,
                 stream,
-                processed_ms=unbilled,
-                media_end_ms=target,
+                processed_ms=bill,
+                media_end_ms=(stream.processed_ms or 0) + bill,
+                idempotency_key=charge_key,
             )
         await ingest_nodes.cancel_idle_termination(
             session,
