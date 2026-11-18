@@ -158,6 +158,11 @@ class AwsSpotLauncher:
         put("agent.env", self._boot_env_text().encode(), "text/plain")
         put("agent.py", agent, "text/x-python")
         put("onbox.py", onbox, "text/x-python")
+        put(
+            "bootstrap.sh",
+            self._bootstrap_script(region).encode(),
+            "text/x-shellscript",
+        )
         return prefix
 
     def _user_data(self, boot_prefix: str) -> str:
@@ -203,7 +208,20 @@ aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/agent.py" /usr/local/bin/streamclip-anal
 aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/onbox.py" /usr/local/bin/streamclip_onbox_analyze.py --region "$AWS_DEFAULT_REGION"
 chmod 600 /etc/streamclip/agent.env
 chmod 700 /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
-# Secrets stay in agent.env (root-only). Do not echo that file.
+aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/bootstrap.sh" /usr/local/bin/streamclip-bootstrap.sh --region "$AWS_DEFAULT_REGION"
+chmod 700 /usr/local/bin/streamclip-bootstrap.sh
+bash /usr/local/bin/streamclip-bootstrap.sh
+"""
+        if len(script.encode("utf-8")) > 16384:
+            raise RuntimeError(
+                f"EC2 user-data is {len(script.encode('utf-8'))} bytes (limit 16384)"
+            )
+        return script
+
+    def _bootstrap_script(self, region: str) -> str:
+        """Shell installed from S3. EC2 user-data itself cannot exceed 16 KiB."""
+        region_q = region.replace("'", "'\\''")
+        return f"""# Secrets stay in agent.env (root-only). Do not echo that file.
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
   | tar -xz -C /usr/local/bin mediamtx
@@ -541,7 +559,7 @@ systemctl daemon-reload
 systemctl enable --now streamclip-agent
 systemctl enable --now mediamtx
 """
-        return script
+
 
     async def launch(self, *, organization_id: uuid.UUID, node_name: str) -> LaunchResult:
         settings = self._settings
@@ -553,11 +571,11 @@ systemctl enable --now mediamtx
             boot_prefix = self._publish_boot_bundle()
             raw_user_data = self._user_data(boot_prefix).encode("utf-8")
             user_data_b64 = base64.b64encode(raw_user_data).decode("ascii")
-            # EC2 rejects encoded user-data above 25600 bytes (16KB raw).
-            if len(user_data_b64) > 25000:
+            # RunInstances rejects user-data whose raw size exceeds 16384 bytes.
+            if len(raw_user_data) > 16384:
                 raise RuntimeError(
-                    f"EC2 user-data is {len(user_data_b64)} bytes encoded "
-                    "(limit 25600). Boot scripts must be fetched from S3."
+                    f"EC2 user-data is {len(raw_user_data)} bytes (limit 16384). "
+                    "Boot scripts must be fetched from S3."
                 )
             kwargs: dict = {
                 "ImageId": settings.ingest_ec2_ami_id,
