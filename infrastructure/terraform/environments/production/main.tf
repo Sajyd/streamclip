@@ -83,6 +83,8 @@ module "ingest_node" {
   api_event_url      = var.ingest_api_event_url != "" ? var.ingest_api_event_url : replace(var.ingest_api_auth_url, "/auth", "/event")
   ingest_hook_secret = var.ingest_hook_secret
   instance_type      = "t4g.small"
-  use_spot           = true
+  # Shared OBS entrypoint. Spot reclaim in eu-north-1b left the Elastic IP unattached.
+  use_spot           = false
+  availability_zone  = "eu-north-1a"
   allocate_eip       = true
 }

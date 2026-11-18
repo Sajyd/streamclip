@@ -19,6 +19,14 @@ data "aws_subnets" "default" {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
+
+  dynamic "filter" {
+    for_each = var.availability_zone == "" ? [] : [var.availability_zone]
+    content {
+      name   = "availability-zone"
+      values = [filter.value]
+    }
+  }
 }
 
 data "aws_ami" "amazon_linux" {

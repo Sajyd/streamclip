@@ -43,8 +43,15 @@ variable "instance_type" {
 }
 
 variable "use_spot" {
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
+  description = "Per-org boxes are spot. The shared RTMP edge should stay on-demand: a reclaim drops rtmp.streamclip.fr."
+}
+
+variable "availability_zone" {
+  type        = string
+  default     = ""
+  description = "AZ for the shared edge. Empty uses the first subnet in the default VPC."
 }
 
 variable "allocate_eip" {
