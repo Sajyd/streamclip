@@ -86,6 +86,7 @@ async def persist_segment_analysis(
     frames: int,
     model: str,
     provider: str,
+    diagnostics: dict[str, Any] | None = None,
 ) -> SegmentResult:
     """Write MediaSegment + AnalysisWindow + HighlightCandidates for one 5-min slice."""
     start_ms = sequence * WINDOW_MS
@@ -153,7 +154,9 @@ async def persist_segment_analysis(
         "segment_url_key": storage_key,
         "frames": frames,
         "moments": len(moments),
+        "transcript_chars": len(transcript_text or ""),
         "transcript_words": transcript_words or [],
+        "diagnostics": diagnostics or {},
     }
     window.analyzed_at = now
 
@@ -172,6 +175,8 @@ async def persist_segment_analysis(
             "moments": moments_to_json(moments),
             "storage_key": storage_key,
             "transcript_words": transcript_words or [],
+            "transcript_chars": len(transcript_text or ""),
+            "diagnostics": diagnostics or {},
         },
     )
     session.add(job)
@@ -381,6 +386,9 @@ async def analyze_local_segment(
             sequence=sequence,
             moments=len(moments),
             frames=len(frames),
+            transcript_chars=len(transcript_text),
+            words=len(words),
+            highlights_written=len(moments),
         )
         return result
 

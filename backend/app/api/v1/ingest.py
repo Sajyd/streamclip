@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import hmac
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import parse_qs
 
+import structlog
 from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
@@ -20,7 +21,13 @@ from app.core.errors import (
     PermissionDeniedError,
     ServiceUnavailableError,
 )
-from app.models.enums import IngestProtocol, StreamEndReason, StreamSessionStatus
+from app.models.enums import (
+    ActorType,
+    AuditOutcome,
+    IngestProtocol,
+    StreamEndReason,
+    StreamSessionStatus,
+)
 from app.models.media import StreamKey, StreamSession
 from app.schemas.api import (
     IngestAuthHookRequest,
@@ -38,12 +45,97 @@ from app.schemas.api import (
     StreamSessionList,
     StreamSessionOut,
 )
-from app.models.enums import ActorType, AuditOutcome
 from app.services import ingest as ingest_service
 from app.services import ingest_nodes
 from app.services import playback as playback_service
 from app.services.audit import RequestMeta, audit
 from app.services.rtmp_resolve_page import render_resolve_page
+
+log = structlog.get_logger(__name__)
+
+_DIAG_STR = {
+    "empty_reason": 80,
+    "transcript_preview": 280,
+    "raw_preview": 1200,
+    "error": 400,
+    "model": 128,
+    "region": 32,
+    "stop_reason": 64,
+    "provider": 64,
+}
+_DIAG_INT = (
+    "transcript_chars",
+    "word_count",
+    "frames",
+    "raw_moments",
+    "kept_moments",
+    "dropped_count",
+    "input_tokens",
+    "output_tokens",
+)
+
+
+def _clip_text(value: object, limit: int) -> str:
+    return str(value or "").replace("\n", " ")[:limit]
+
+
+def _segment_analysis_details(
+    body: SegmentAnalysisHookRequest, moments: list[Any]
+) -> dict[str, Any]:
+    """Bounded trace written to the live pipeline log for one 5-min segment."""
+    diag = body.diagnostics if isinstance(body.diagnostics, dict) else {}
+    details: dict[str, Any] = {
+        "sequence": body.sequence,
+        "storage_key": body.storage_key,
+        "size_bytes": body.size_bytes,
+        "moments": len(moments),
+        "highlights_written": len(moments),
+        "frames": body.frames,
+        "provider": body.provider,
+        "model": body.model,
+        "transcript_chars": len(body.transcript_text or ""),
+        "word_count": len(body.transcript_words or []),
+        "transcript_preview": _clip_text(body.transcript_text, 280),
+    }
+    if moments:
+        details["moment_summaries"] = [
+            {
+                "title": _clip_text(getattr(m, "title", ""), 80),
+                "score": getattr(m, "score", None),
+                "start_ms": getattr(m, "start_ms", None),
+                "end_ms": getattr(m, "end_ms", None),
+                "category": getattr(m, "category", None),
+            }
+            for m in moments[:8]
+        ]
+    for key, limit in _DIAG_STR.items():
+        if diag.get(key):
+            details[key] = _clip_text(diag.get(key), limit)
+    for key in _DIAG_INT:
+        value = diag.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        details[key] = value
+    dropped = diag.get("dropped")
+    if isinstance(dropped, list) and dropped:
+        details["dropped"] = [
+            item for item in dropped[:8] if isinstance(item, dict)
+        ]
+    if "empty_reason" not in details:
+        if moments:
+            details["result"] = "highlights_written"
+        elif (body.provider or "").endswith("failed"):
+            details["empty_reason"] = "luna_error"
+        elif body.frames <= 0:
+            details["empty_reason"] = "no_frames"
+        elif not (body.transcript_text or "").strip():
+            details["empty_reason"] = "model_returned_no_moments"
+            details["transcript"] = "empty"
+        else:
+            details["empty_reason"] = "model_returned_no_moments"
+    elif moments:
+        details["result"] = "highlights_written"
+    return details
 
 
 def _hook_meta(request: Request) -> RequestMeta:
@@ -100,9 +192,10 @@ async def _instance_rtmp_for_org(ctx: Ctx, organization_id) -> str | None:
     if node is None or node.status.value != "ready" or not node.public_hostname:
         return None
     host = node.public_hostname
-    if not host.endswith(".ingest.test"):
-        if not await asyncio.to_thread(ingest_nodes.rtmp_port_open, host):
-            return None
+    if not host.endswith(".ingest.test") and not await asyncio.to_thread(
+        ingest_nodes.rtmp_port_open, host
+    ):
+        return None
     return ingest_nodes.rtmp_url_for_host(host)
 
 
@@ -837,6 +930,7 @@ async def segment_analysis_persist(
         if stream is None:
             raise NotFoundError("Session introuvable.", code="stream_not_found")
         await ingest_service.resume_session(session, stream)
+        analysis_log = _segment_analysis_details(body, moments)
         await persist_segment_analysis(
             session,
             stream=stream,
@@ -849,6 +943,7 @@ async def segment_analysis_persist(
             frames=body.frames,
             model=body.model,
             provider=body.provider or "onbox",
+            diagnostics=analysis_log,
         )
         already = stream.processed_ms or 0
         target = (body.sequence + 1) * WINDOW_MS
@@ -871,14 +966,9 @@ async def segment_analysis_persist(
             organization_id=stream.organization_id,
             stream_id=stream.id,
             request=request,
-            details={
-                "sequence": body.sequence,
-                "storage_key": body.storage_key,
-                "moments": len(moments),
-                "frames": body.frames,
-                "provider": body.provider,
-            },
+            details=analysis_log,
         )
+        log.info("ingest.segment_analysis", stream_id=str(stream.id), **analysis_log)
     return SegmentAnalysisHookOut(
         message="ok",
         moments=len(moments),

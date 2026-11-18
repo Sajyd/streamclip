@@ -14,6 +14,7 @@ from app.core import release
 from app.core.ids import uuid7
 from app.models.enums import IngestProtocol, StreamSessionStatus
 from app.models.media import StreamSession
+from app.models.system import AuditLog
 from app.services.bedrock_luna import CameraBox, ViralMoment
 from app.services.segment_pipeline import persist_segment_analysis
 from tests.helpers import API, register
@@ -96,6 +97,85 @@ async def test_onbox_segment_analysis_hook_persists_highlights(
         refreshed = await session.get(StreamSession, stream.id)
         assert refreshed is not None
         assert refreshed.processed_ms == 300_000
+        audit_row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "ingest.segment_analysis",
+                    AuditLog.target_id == str(stream.id),
+                )
+            )
+        ).scalar_one()
+        assert audit_row.details["highlights_written"] == 1
+        assert audit_row.details["transcript_chars"] == len("moment fort en live")
+        assert audit_row.details["word_count"] == 2
+        assert audit_row.details["moment_summaries"][0]["title"] == "Clip on-box"
+        assert audit_row.details["result"] == "highlights_written"
+
+
+@pytest.mark.asyncio
+async def test_segment_analysis_log_explains_zero_moments(
+    client: httpx.AsyncClient, ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished analysis with no highlight still records why in the pipeline log."""
+    monkeypatch.setattr(release, "INGEST_KEYS_AVAILABLE", True)
+    ctx.settings.ingest_hook_secret = SecretStr(HOOK_SECRET)
+    account = await register(client, email="onbox-empty@example.com")
+    stream = await _seed_session(ctx, account.organization_id)
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    posted = await client.post(
+        f"{API}/ingest/hooks/segment-analysis",
+        headers=hook,
+        json={
+            "stream_session_id": str(stream.id),
+            "sequence": 0,
+            "storage_key": f"tmp/lives/{stream.id}/seg_0000.mp4",
+            "size_bytes": 128_376_297,
+            "frames": 60,
+            "model": "us.openai.gpt-6-luna",
+            "provider": "bedrock",
+            "transcript_text": "bonjour le live",
+            "transcript_words": [{"text": "bonjour", "start_ms": 0, "end_ms": 400}],
+            "moments": [],
+            "diagnostics": {
+                "empty_reason": "model_returned_no_moments",
+                "stop_reason": "end_turn",
+                "raw_moments": 0,
+                "kept_moments": 0,
+                "input_tokens": 1200,
+                "output_tokens": 40,
+                "raw_preview": '{"moments": []}',
+                "transcript_preview": "bonjour le live",
+            },
+        },
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["moments"] == 0
+
+    listed = await client.get(
+        f"{API}/highlights",
+        params={"stream_session_id": str(stream.id)},
+        headers=account.headers,
+    )
+    assert listed.json()["items"] == []
+
+    async with ctx.db.system_tx() as session:
+        audit_row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "ingest.segment_analysis",
+                    AuditLog.target_id == str(stream.id),
+                )
+            )
+        ).scalar_one()
+    details = audit_row.details
+    assert details["highlights_written"] == 0
+    assert details["frames"] == 60
+    assert details["empty_reason"] == "model_returned_no_moments"
+    assert details["raw_preview"] == '{"moments": []}'
+    assert details["stop_reason"] == "end_turn"
+    assert details["input_tokens"] == 1200
+    assert details["transcript_preview"] == "bonjour le live"
 
 
 @pytest.mark.asyncio

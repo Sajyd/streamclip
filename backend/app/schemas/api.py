@@ -763,6 +763,9 @@ class SegmentAnalysisHookRequest(ApiModel):
     frames: int = Field(default=0, ge=0, le=120)
     model: Annotated[str, Field(max_length=128)] = "us.openai.gpt-6-luna"
     provider: Annotated[str, Field(max_length=64)] = "bedrock"
+    # On-box trace: model stop reason, raw JSON preview, drop counts.
+    # The API keeps a bounded subset in the pipeline audit log.
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class SegmentAnalysisHookOut(ApiModel):

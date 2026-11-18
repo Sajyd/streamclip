@@ -196,18 +196,51 @@ class BedrockLuna:
         )
         parts = response.get("output", {}).get("message", {}).get("content", [])
         text = " ".join(p.get("text", "") for p in parts if "text" in p)
+        usage = response.get("usage") or {}
+        stop_reason = response.get("stopReason")
         try:
             payload = _parse_json_payload(text)
         except json.JSONDecodeError:
-            log.error("bedrock_luna_invalid_json", preview=text[:400])
+            log.error(
+                "bedrock_luna_invalid_json",
+                model=self.model_id,
+                frames=len(sampled),
+                transcript_chars=len(transcript_text),
+                words=len(transcript_words),
+                stop_reason=stop_reason,
+                input_tokens=usage.get("inputTokens"),
+                output_tokens=usage.get("outputTokens"),
+                preview=text[:800],
+            )
             return []
+        raw_items = payload.get("moments") or []
         moments: list[ViralMoment] = []
-        for item in payload.get("moments") or []:
-            if isinstance(item, dict):
-                moment = _clamp_moment(item)
-                if moment is not None:
-                    moments.append(moment)
-        return _dedupe_non_overlapping(moments)
+        dropped = 0
+        for item in raw_items:
+            if not isinstance(item, dict):
+                dropped += 1
+                continue
+            moment = _clamp_moment(item)
+            if moment is None:
+                dropped += 1
+                continue
+            moments.append(moment)
+        kept = _dedupe_non_overlapping(moments)
+        log.info(
+            "bedrock_luna_result",
+            model=self.model_id,
+            frames=len(sampled),
+            transcript_chars=len(transcript_text),
+            words=len(transcript_words),
+            stop_reason=stop_reason,
+            input_tokens=usage.get("inputTokens"),
+            output_tokens=usage.get("outputTokens"),
+            raw_moments=len(raw_items) if isinstance(raw_items, list) else 0,
+            kept_moments=len(kept),
+            dropped=dropped,
+            preview=text[:800],
+        )
+        return kept
 
 
 def moments_to_json(moments: list[ViralMoment]) -> list[dict[str, Any]]:

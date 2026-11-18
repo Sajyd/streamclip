@@ -90,6 +90,8 @@ def extract_frames(video: Path, out_dir: Path) -> list[Path]:
     cmd = [
         ff,
         "-y",
+        "-threads",
+        "1",
         "-i",
         str(video),
         "-map",
@@ -265,15 +267,28 @@ def _parse_json(text: str) -> dict[str, Any]:
     return json.loads(text)
 
 
+def _clip(value: Any, limit: int) -> str:
+    text = str(value or "").replace("\n", " ")
+    return text[:limit]
+
+
 def luna_analyze(
     *,
     transcript_text: str,
     transcript_words: list[dict[str, Any]],
     frame_paths: list[Path],
-) -> tuple[list[dict[str, Any]], str]:
-    """Call Bedrock GPT-6 Luna. Returns (moments, model_id)."""
+) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+    """Call Bedrock GPT-6 Luna. Returns (moments, model_id, diagnostics)."""
     model = (os.environ.get("BEDROCK_MODEL") or DEFAULT_MODEL).strip()
     region = (os.environ.get("BEDROCK_REGION") or DEFAULT_BEDROCK_REGION).strip()
+    diagnostics: dict[str, Any] = {
+        "model": model,
+        "region": region,
+        "frames": len(frame_paths),
+        "transcript_chars": len(transcript_text),
+        "word_count": len(transcript_words),
+        "transcript_preview": _clip(transcript_text, 280),
+    }
     try:
         import boto3  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -308,18 +323,76 @@ def luna_analyze(
     )
     parts = response.get("output", {}).get("message", {}).get("content", [])
     text = " ".join(p.get("text", "") for p in parts if "text" in p)
+    usage = response.get("usage") or {}
+    diagnostics["stop_reason"] = response.get("stopReason")
+    diagnostics["input_tokens"] = usage.get("inputTokens")
+    diagnostics["output_tokens"] = usage.get("outputTokens")
+    diagnostics["raw_preview"] = _clip(text, 1200)
     try:
         payload = _parse_json(text)
     except json.JSONDecodeError:
-        _log(f"luna_invalid_json preview={text[:300]}")
-        return [], model
+        diagnostics["parse_ok"] = False
+        diagnostics["empty_reason"] = "invalid_json"
+        _log(
+            "luna_invalid_json "
+            f"stop={diagnostics['stop_reason']} "
+            f"in={diagnostics['input_tokens']} out={diagnostics['output_tokens']} "
+            f"preview={diagnostics['raw_preview'][:400]}"
+        )
+        return [], model, diagnostics
+    raw_items = payload.get("moments") or []
+    if not isinstance(raw_items, list):
+        raw_items = []
+    diagnostics["parse_ok"] = True
+    diagnostics["raw_moments"] = len(raw_items)
     moments: list[dict[str, Any]] = []
-    for item in payload.get("moments") or []:
-        if isinstance(item, dict):
-            moment = _clamp_moment(item)
-            if moment is not None:
-                moments.append(moment)
-    return _dedupe(moments), model
+    dropped: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            dropped.append({"reason": "not_object"})
+            continue
+        moment = _clamp_moment(item)
+        if moment is None:
+            dropped.append(
+                {
+                    "reason": "invalid_range",
+                    "start_ms": item.get("start_ms"),
+                    "end_ms": item.get("end_ms"),
+                    "title": _clip(item.get("title"), 80),
+                }
+            )
+            continue
+        moments.append(moment)
+    kept = _dedupe(moments)
+    diagnostics["dropped"] = dropped[:8]
+    diagnostics["dropped_count"] = len(dropped) + (len(moments) - len(kept))
+    diagnostics["kept_moments"] = len(kept)
+    if not kept:
+        diagnostics["empty_reason"] = (
+            "all_moments_dropped" if raw_items else "model_returned_no_moments"
+        )
+    else:
+        diagnostics["empty_reason"] = ""
+        diagnostics["moment_summaries"] = [
+            {
+                "title": _clip(m.get("title"), 80),
+                "score": m.get("score"),
+                "start_ms": m.get("start_ms"),
+                "end_ms": m.get("end_ms"),
+                "category": m.get("category"),
+            }
+            for m in kept[:8]
+        ]
+    _log(
+        "luna_result "
+        f"frames={len(frame_paths)} words={len(transcript_words)} "
+        f"chars={len(transcript_text)} stop={diagnostics.get('stop_reason')} "
+        f"raw={diagnostics['raw_moments']} kept={len(kept)} "
+        f"dropped={diagnostics['dropped_count']} "
+        f"reason={diagnostics['empty_reason']} "
+        f"preview={diagnostics['raw_preview'][:400]}"
+    )
+    return kept, model, diagnostics
 
 
 def _attach_words(
@@ -396,19 +469,31 @@ def analyze_segment_file(
         moments: list[dict[str, Any]] = []
         model = (os.environ.get("BEDROCK_MODEL") or DEFAULT_MODEL).strip()
         provider = "bedrock"
+        diagnostics: dict[str, Any] = {
+            "frames": 0,
+            "transcript_chars": len(transcript_text),
+            "word_count": len(words),
+            "transcript_preview": _clip(transcript_text, 280),
+            "model": model,
+        }
         if frames:
             try:
-                moments, model = luna_analyze(
+                moments, model, diagnostics = luna_analyze(
                     transcript_text=transcript_text,
                     transcript_words=words,
                     frame_paths=frames,
                 )
                 moments = _attach_words(moments, words)
-            except Exception as exc:  # noqa: BLE001
-                _log(f"luna_fail err={exc}")
+            except Exception as exc:
                 provider = "bedrock_failed"
+                diagnostics["empty_reason"] = "luna_error"
+                diagnostics["error"] = _clip(exc, 400)
+                diagnostics["frames"] = len(frames)
+                _log(f"luna_fail seq={sequence} err={exc}")
         else:
             provider = "skipped_no_frames"
+            diagnostics["empty_reason"] = "no_frames"
+            diagnostics["frames"] = 0
             _log(f"skip_no_frames seq={sequence} size={size_bytes}")
 
         payload = {
@@ -422,11 +507,15 @@ def analyze_segment_file(
             "frames": len(frames),
             "model": model,
             "provider": provider,
+            "diagnostics": diagnostics,
         }
         ok = post_analysis_result(payload)
         payload["posted"] = ok
         _log(
             f"analyze_done seq={sequence} frames={len(frames)} "
-            f"moments={len(moments)} posted={ok}"
+            f"moments={len(moments)} words={len(words)} "
+            f"chars={len(transcript_text)} provider={provider} "
+            f"reason={diagnostics.get('empty_reason') or 'highlights'} "
+            f"posted={ok} key={storage_key}"
         )
         return payload
