@@ -76,6 +76,7 @@ export function LiveMonitor({
         // Keep last known state on transient failures.
       }
     };
+    void tick();
     const timer = window.setInterval(() => void tick(), 4000);
     return () => {
       cancelled = true;

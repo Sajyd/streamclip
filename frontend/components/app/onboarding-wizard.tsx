@@ -212,6 +212,7 @@ export function OnboardingWizard({
   );
   /** Clear secret kept only in memory until onboarding ends. */
   const [creds, setCreds] = useState<Creds | null>(null);
+  const [liveDetected, setLiveDetected] = useState(initial.live_detected);
 
   const steps = useMemo(() => buildSteps(software, hasPlugin), [software, hasPlugin]);
   const [step, setStep] = useState<StepId>(() =>
@@ -668,18 +669,14 @@ export function OnboardingWizard({
             hint="Démarrez dans votre logiciel. On détecte le signal automatiquement."
           />
           <div className="mt-6">
-            <LiveDetector sessions={sessions} />
+            <LiveDetector sessions={sessions} onDetected={() => setLiveDetected(true)} />
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
             <button
               type="button"
               disabled={pending}
               className={buttonClasses({ variant: "primary" })}
-              onClick={() =>
-                finish(
-                  Boolean(sessions.some((s) => s.status === "live" || s.status === "pending")),
-                )
-              }
+              onClick={() => finish(liveDetected)}
             >
               {pending ? "Ouverture…" : "Ouvrir le tableau de bord"}
             </button>

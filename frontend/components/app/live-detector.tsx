@@ -1,16 +1,20 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { getIngestSessionsAction } from "@/app/actions/live";
 import { saveOnboardingAction } from "@/app/actions/onboarding";
 import { Badge } from "@/components/ui/primitives";
 import type { StreamSession } from "@/types/api";
 
 const LIVE_STATUSES = new Set(["pending", "live"]);
 
+function findLive(sessions: StreamSession[]) {
+  return sessions.find((session) => LIVE_STATUSES.has(session.status));
+}
+
 export function LiveDetector({
-  sessions,
+  sessions: initialSessions,
   onDetected,
   pollMs = 4000,
 }: {
@@ -18,25 +22,39 @@ export function LiveDetector({
   onDetected?: () => void;
   pollMs?: number;
 }) {
-  const router = useRouter();
+  const [sessions, setSessions] = useState(initialSessions);
   const announced = useRef(false);
-  const live = sessions.find((session) => LIVE_STATUSES.has(session.status));
+  const live = findLive(sessions);
+
+  useEffect(() => {
+    setSessions(initialSessions);
+  }, [initialSessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const next = await getIngestSessionsAction();
+        if (!cancelled) setSessions(next);
+      } catch {
+        // Keep last known state on transient failures.
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), pollMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [pollMs]);
 
   useEffect(() => {
     if (!live || announced.current) return;
     announced.current = true;
     void saveOnboardingAction({ live_detected: true, step: "live" }).then(() => {
       onDetected?.();
-      router.refresh();
     });
-  }, [live, onDetected, router]);
-
-  // Keep polling while live too: an abrupt OBS quit must clear "En direct"
-  // as soon as the session is closed (or marked stale) on the API.
-  useEffect(() => {
-    const timer = setInterval(() => router.refresh(), pollMs);
-    return () => clearInterval(timer);
-  }, [pollMs, router]);
+  }, [live, onDetected]);
 
   if (live) {
     return (

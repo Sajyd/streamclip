@@ -2,7 +2,7 @@
 
 import { api } from "@/lib/api";
 import { readSession } from "@/lib/session";
-import type { Highlight, LivePlayback } from "@/types/api";
+import type { Highlight, LivePlayback, StreamSession } from "@/types/api";
 
 export async function getLivePlaybackAction(): Promise<LivePlayback> {
   const { access } = await readSession();
@@ -14,6 +14,15 @@ export async function getLivePlaybackAction(): Promise<LivePlayback> {
     return offline(result.error.message);
   }
   return result.data;
+}
+
+/** Client poll for live detection — avoids router.refresh() which aborts Link navigations. */
+export async function getIngestSessionsAction(): Promise<StreamSession[]> {
+  const { access } = await readSession();
+  if (!access) return [];
+  const result = await api<{ items: StreamSession[] }>("/ingest/sessions", { token: access });
+  if (!result.ok) return [];
+  return result.data.items;
 }
 
 export async function getLiveHighlightsAction(
