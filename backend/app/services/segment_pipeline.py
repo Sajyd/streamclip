@@ -114,13 +114,15 @@ async def persist_segment_analysis(
                 storage_key=storage_key,
                 size_bytes=size_bytes,
                 status=SegmentStatus.AVAILABLE,
-                expires_at=now + timedelta(days=7),
+                # HD buffer is short-lived (cost); highlights/clips keep longer per plan.
+                expires_at=now + timedelta(days=1),
             )
         )
     else:
         existing_seg.storage_key = storage_key
         existing_seg.size_bytes = size_bytes
         existing_seg.status = SegmentStatus.AVAILABLE
+        existing_seg.expires_at = now + timedelta(days=1)
 
     window = (
         await session.execute(

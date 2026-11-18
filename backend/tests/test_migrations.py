@@ -108,4 +108,4 @@ def test_isolation_migration_snapshot_matches_the_models() -> None:
 
 
 def test_code_expects_the_latest_revision() -> None:
-    assert migrations.expected_revision() == "0003"
+    assert migrations.expected_revision() == "0006"

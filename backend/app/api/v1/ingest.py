@@ -23,6 +23,7 @@ from app.models.enums import IngestProtocol, StreamEndReason, StreamSessionStatu
 from app.models.media import StreamKey, StreamSession
 from app.schemas.api import (
     IngestAuthHookRequest,
+    IngestEventHookOut,
     IngestEventHookRequest,
     IngestRelayTargetOut,
     IngestResolveOut,
@@ -611,25 +612,28 @@ async def relay_target(
                 push_url = f"{push}/{suffix}"
             else:
                 push_url = f"{push}/{path.strip('/')}"
-        _pipeline_audit(
-            session,
-            "ingest.relay_target",
-            organization_id=key.organization_id,
-            stream_id=stream.id if stream else None,
-            request=request,
-            outcome=(
-                AuditOutcome.SUCCESS
-                if result.status == "ready" and push_url
-                else AuditOutcome.FAILURE
-            ),
-            details={
-                "path": path,
-                "status": result.status,
-                "host": result.public_hostname,
-                "message": result.message,
-                "has_push_url": bool(push_url),
-            },
-        )
+        # Do not spam the pipeline journal while the spot/MediaMTX is still
+        # warming (edge polls every ~3s). Audit only ready / terminal states.
+        if result.status != "starting":
+            _pipeline_audit(
+                session,
+                "ingest.relay_target",
+                organization_id=key.organization_id,
+                stream_id=stream.id if stream else None,
+                request=request,
+                outcome=(
+                    AuditOutcome.SUCCESS
+                    if result.status == "ready" and push_url
+                    else AuditOutcome.FAILURE
+                ),
+                details={
+                    "path": path,
+                    "status": result.status,
+                    "host": result.public_hostname,
+                    "message": result.message,
+                    "has_push_url": bool(push_url),
+                },
+            )
         if push_url:
             return IngestRelayTargetOut(
                 status="ready",
@@ -643,19 +647,22 @@ async def relay_target(
         )
 
 
-@router.post("/ingest/hooks/event", response_model=Message)
-async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ctx) -> Message:
+@router.post("/ingest/hooks/event", response_model=IngestEventHookOut)
+async def mediamtx_event(
+    body: IngestEventHookRequest, request: Request, ctx: Ctx
+) -> IngestEventHookOut:
     """Publisher disconnect / segment upload / heartbeat from the ingest agent."""
     _require_hook_secret(request, ctx)
     public_id = _public_id_from_path(body.path)
     if public_id is None:
-        return Message(message="ignored")
+        return IngestEventHookOut(message="ignored")
     queued_transcription = False
     queued_segment = False
+    stream_session_id = None
     async with ctx.db.system_tx() as session:
         key = await ingest_service.find_key_by_public_id(session, public_id)
         if key is None:
-            return Message(message="ignored")
+            return IngestEventHookOut(message="ignored")
         stream = (
             await session.execute(
                 select(StreamSession)
@@ -676,7 +683,8 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             )
         ).scalar_one_or_none()
         if stream is None:
-            return Message(message="no_open_session")
+            return IngestEventHookOut(message="no_open_session")
+        stream_session_id = stream.id
         event = body.event.lower()
         if event in ("publisher_disconnect", "end", "stop"):
             # Soft interrupt: MediaMTX flaps / encoder stalls must not end an
@@ -780,4 +788,4 @@ async def mediamtx_event(body: IngestEventHookRequest, request: Request, ctx: Ct
             )
         except Exception:  # noqa: BLE001 — ack already committed; drain cron retries
             pass
-    return Message(message="ok")
+    return IngestEventHookOut(message="ok", stream_session_id=stream_session_id)

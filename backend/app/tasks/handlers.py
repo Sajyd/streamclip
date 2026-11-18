@@ -12,9 +12,19 @@ from sqlalchemy import delete, or_, select, update
 
 from app.context import AppContext
 from app.email import templates
-from app.models.clips import StorageAsset
-from app.models.enums import AssetStatus, AuthTokenPurpose, TaskStatus, UserStatus
+from app.models.analysis import HighlightCandidate
+from app.models.billing import Plan, Subscription
+from app.models.clips import Clip, StorageAsset
+from app.models.enums import (
+    AssetStatus,
+    AuthTokenPurpose,
+    CandidateStatus,
+    SegmentStatus,
+    TaskStatus,
+    UserStatus,
+)
 from app.models.identity import AuthSession, AuthToken, RefreshToken, User
+from app.models.media import MediaSegment
 from app.models.system import AuditLog, RateLimitCounter, Task
 from app.services import account_data
 from app.services.auth import issue_auth_token
@@ -23,6 +33,8 @@ from app.tasks.queue import ClaimedTask, PermanentTaskError, task_handler
 log = structlog.get_logger(__name__)
 
 AUDIT_PII_RETENTION_DAYS = 365
+# Fallback when a plan has no clip_retention_days (should be seeded).
+DEFAULT_HIGHLIGHT_RETENTION_DAYS = 7
 
 
 def _uuid(task: ClaimedTask, field: str) -> uuid.UUID:
@@ -422,6 +434,20 @@ async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
                 .limit(500)
             )
         ).all()
+        expired_segments = (
+            await session.execute(
+                select(MediaSegment.id, MediaSegment.storage_key)
+                .where(
+                    MediaSegment.status == SegmentStatus.AVAILABLE,
+                    MediaSegment.expires_at < now,
+                    or_(
+                        MediaSegment.pinned_until.is_(None),
+                        MediaSegment.pinned_until < now,
+                    ),
+                )
+                .limit(500)
+            )
+        ).all()
 
     # Delete the object first, then record it: a crash in between only means
     # the (idempotent) deletion is repeated on the next run.
@@ -436,6 +462,19 @@ async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
                 )
         removed["storage_assets"] = len(expired_assets)
 
+        for seg_id, key in expired_segments:
+            await ctx.storage.delete_object(key)
+            async with ctx.db.system_tx() as session:
+                await session.execute(
+                    update(MediaSegment)
+                    .where(MediaSegment.id == seg_id)
+                    .values(status=SegmentStatus.DELETED, deleted_at=now)
+                )
+        removed["media_segments"] = len(expired_segments)
+    else:
+        removed["storage_assets"] = 0
+        removed["media_segments"] = 0
+
     async with ctx.db.system_tx() as session:
         from app.services import ingest as ingest_service
         from app.services import ingest_nodes
@@ -448,5 +487,50 @@ async def cleanup(ctx: AppContext, _task: ClaimedTask) -> None:
             )
         removed["stale_sessions"] = len(stale)
         removed["ingest_spots"] = await ingest_nodes.terminate_due_nodes(session, ctx.settings)
+
+        # Highlights / clips: free=7d, paid longer (plans.clip_retention_days).
+        plan_rows = (
+            await session.execute(
+                select(Subscription.organization_id, Plan.clip_retention_days)
+                .join(Plan, Plan.id == Subscription.plan_id)
+                .where(Subscription.ended_at.is_(None))
+            )
+        ).all()
+        purged_highlights = 0
+        purged_clips = 0
+        for organization_id, retention_days in plan_rows:
+            days = retention_days if retention_days is not None else DEFAULT_HIGHLIGHT_RETENTION_DAYS
+            cutoff = now - timedelta(days=days)
+            hl = await session.execute(
+                update(HighlightCandidate)
+                .where(
+                    HighlightCandidate.organization_id == organization_id,
+                    HighlightCandidate.created_at < cutoff,
+                    HighlightCandidate.status.in_(
+                        (
+                            CandidateStatus.CANDIDATE,
+                            CandidateStatus.APPROVED,
+                            CandidateStatus.REFINING,
+                        )
+                    ),
+                )
+                .values(
+                    status=CandidateStatus.REJECTED,
+                    rejection_reason="retention_expired",
+                )
+            )
+            purged_highlights += int(getattr(hl, "rowcount", 0) or 0)
+            cl = await session.execute(
+                update(Clip)
+                .where(
+                    Clip.organization_id == organization_id,
+                    Clip.expires_at.is_(None),
+                    Clip.created_at < cutoff,
+                )
+                .values(expires_at=cutoff)
+            )
+            purged_clips += int(getattr(cl, "rowcount", 0) or 0)
+        removed["highlights_expired"] = purged_highlights
+        removed["clips_retention_tagged"] = purged_clips
 
     log.info("maintenance_cleanup", **removed)

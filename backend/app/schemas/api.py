@@ -718,3 +718,13 @@ class IngestEventHookRequest(ApiModel):
     storage_key: Annotated[str | None, Field(default=None, max_length=512)] = None
     sequence: int | None = Field(default=None, ge=0, le=10_000)
     size_bytes: int | None = Field(default=None, ge=0)
+
+
+class IngestEventHookOut(ApiModel):
+    """Ack for MediaMTX / agent event hooks.
+
+    `stream_session_id` lets the on-box agent key S3 under a unique live folder.
+    """
+
+    message: str = "ok"
+    stream_session_id: uuid.UUID | None = None

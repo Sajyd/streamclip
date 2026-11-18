@@ -51,9 +51,9 @@ async def test_liveness_and_readiness(client: httpx.AsyncClient, ctx: AppContext
         behind = await client.get(f"{API}/readyz")
     finally:
         async with ctx.db.system_tx() as session:
-            await session.execute(text("UPDATE alembic_version SET version_num = '0003'"))
+            await session.execute(text("UPDATE alembic_version SET version_num = '0006'"))
     assert behind.status_code == 503
-    assert behind.json()["checks"]["migrations"] == "expected 0003, found 0001"
+    assert behind.json()["checks"]["migrations"] == "expected 0006, found 0001"
 
 
 async def test_readiness_reports_an_unreachable_database(settings: Settings) -> None:

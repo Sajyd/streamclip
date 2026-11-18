@@ -50,6 +50,7 @@ SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
 PIDFILE="/var/run/streamclip/seg_${SAFE}.pid"
 SEQFILE="/var/run/streamclip/seg_${SAFE}.seq"
 LOCKFILE="/var/run/streamclip/seg_${SAFE}.lock"
+SESSIONFILE="/var/run/streamclip/seg_${SAFE}.session"
 LOG="/var/log/streamclip-segment.log"
 WINDOW_S=300
 MIN_BYTES=1000000
@@ -62,6 +63,8 @@ SEQ=0
 trap 'rm -f "$PIDFILE"' EXIT
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
 while true; do
+  LIVE_ID=$(cat "$SESSIONFILE" 2>/dev/null | tr -d '[:space:]' || true)
+  [ -n "$LIVE_ID" ] || LIVE_ID="$SAFE"
   PART="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").partial.mp4"
   OUT="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").mp4"
   rm -f "$PART" "$OUT"
@@ -89,7 +92,7 @@ while true; do
     SIZE=$(stat -c%s "$OUT" 2>/dev/null || echo 0)
   fi
   if [ "$SIZE" -ge "$MIN_BYTES" ]; then
-    KEY="tmp/lives/${SAFE}/seg_$(printf %04d "$SEQ").mp4"
+    KEY="tmp/lives/${LIVE_ID}/seg_$(printf %04d "$SEQ").mp4"
     exec 200>"$LOCKFILE"
     flock -x 200
     if [ -n "${S3_BUCKET:-}" ]; then
@@ -118,12 +121,21 @@ chmod +x /usr/local/bin/streamclip-segment-loop
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
 PATH_NAME="$1"
+SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
 mkdir -p /var/run/streamclip /var/lib/streamclip/segments
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
-curl -fsS -X POST -H "Content-Type: application/json" \
+RESP=$(curl -fsS -X POST -H "Content-Type: application/json" \
   -H "X-Streamclip-Ingest-Secret: $HOOK" \
   -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \
-  "$EVENT_URL" || true
+  "$EVENT_URL" || true)
+SESSION_ID=$(printf '%s' "$RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("stream_session_id") or "")' 2>/dev/null || true)
+if [ -n "$SESSION_ID" ]; then
+  PREV=$(cat "/var/run/streamclip/seg_${SAFE}.session" 2>/dev/null | tr -d '[:space:]' || true)
+  echo "$SESSION_ID" > "/var/run/streamclip/seg_${SAFE}.session"
+  if [ "$PREV" != "$SESSION_ID" ]; then
+    echo 0 > "/var/run/streamclip/seg_${SAFE}.seq"
+  fi
+fi
 if ! curl -fsS -X POST -H "Content-Type: application/json" \
     -d "{\"path\":\"$PATH_NAME\"}" \
     "http://127.0.0.1:8080/start"; then
