@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
-import os
 import secrets
 import shlex
 import time
@@ -107,11 +105,11 @@ class AwsSpotLauncher:
             lines.append(f"{key}={shlex.quote(value)}")
         return "\n".join(lines) + "\n"
 
-    def _publish_boot_bundle(self) -> tuple[str, str]:
-        """Upload boot files with SSE-C. Returns (s3 prefix, base64 seal).
+    def _publish_boot_bundle(self) -> str:
+        """Upload boot files under tmp/. Returns the S3 prefix.
 
-        User-data carries only the one-time seal, not hook, ASR, or AWS keys.
-        Another instance cannot read the objects without that seal.
+        User-data does not contain hook, ASR, or AWS keys. The bucket's own
+        encryption applies; customer-provided keys are rejected by the bucket.
         """
         settings = self._settings
         bucket = (settings.s3_bucket or "").strip()
@@ -120,9 +118,6 @@ class AwsSpotLauncher:
         agent = Path(__file__).with_name("ingest_agent.py").read_bytes()
         onbox = Path(__file__).with_name("ingest_onbox_analyze.py").read_bytes()
         prefix = f"tmp/boot/{secrets.token_urlsafe(24)}"
-        seal = os.urandom(32)
-        seal_b64 = base64.b64encode(seal).decode("ascii")
-        seal_md5 = base64.b64encode(hashlib.md5(seal).digest()).decode("ascii")
         region = settings.s3_region or settings.ingest_ec2_region or "eu-north-1"
         from app.aws.session import boto3_session
 
@@ -134,17 +129,14 @@ class AwsSpotLauncher:
                 Key=f"{prefix}/{name}",
                 Body=body,
                 ContentType=content_type,
-                SSECustomerAlgorithm="AES256",
-                SSECustomerKey=seal_b64,
-                SSECustomerKeyMD5=seal_md5,
             )
 
         put("agent.env", self._boot_env_text().encode(), "text/plain")
         put("agent.py", agent, "text/x-python")
         put("onbox.py", onbox, "text/x-python")
-        return prefix, seal_b64
+        return prefix
 
-    def _user_data(self, boot_prefix: str, boot_seal: str) -> str:
+    def _user_data(self, boot_prefix: str) -> str:
         """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
 
         Vercel only receives segment acks and persisted highlight JSON — never
@@ -160,7 +152,6 @@ class AwsSpotLauncher:
         bucket_q = _sq(bucket)
         region_q = _sq(region)
         prefix_q = _sq(boot_prefix)
-        seal_q = _sq(boot_seal)
 
         # Native MediaMTX + :8080 analysis (5-min buffer → S3 → local Luna).
         # AL2023 has no ffmpeg package — install static arm64 build.
@@ -182,23 +173,12 @@ ffmpeg -version | head -1
 export AWS_DEFAULT_REGION='{region_q}'
 S3_BUCKET='{bucket_q}'
 BOOT_PREFIX='{prefix_q}'
-BOOT_SEAL='{seal_q}'
 umask 077
-fetch_boot() {{
-  aws s3api get-object \\
-    --bucket "$S3_BUCKET" \\
-    --key "$BOOT_PREFIX/$1" \\
-    --sse-customer-algorithm AES256 \\
-    --sse-customer-key "$BOOT_SEAL" \\
-    --region "$AWS_DEFAULT_REGION" \\
-    "$2" >/dev/null
-}}
-fetch_boot agent.env /etc/streamclip/agent.env
-fetch_boot agent.py /usr/local/bin/streamclip-analysis-agent.py
-fetch_boot onbox.py /usr/local/bin/streamclip_onbox_analyze.py
+aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/agent.env" /etc/streamclip/agent.env --region "$AWS_DEFAULT_REGION"
+aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/agent.py" /usr/local/bin/streamclip-analysis-agent.py --region "$AWS_DEFAULT_REGION"
+aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/onbox.py" /usr/local/bin/streamclip_onbox_analyze.py --region "$AWS_DEFAULT_REGION"
 chmod 600 /etc/streamclip/agent.env
 chmod 700 /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
-unset BOOT_SEAL
 # Secrets stay in agent.env (root-only). Do not echo that file.
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
@@ -453,8 +433,8 @@ systemctl enable --now mediamtx
 
         def _run() -> LaunchResult:
             client = self._client()
-            boot_prefix, boot_seal = self._publish_boot_bundle()
-            raw_user_data = self._user_data(boot_prefix, boot_seal).encode("utf-8")
+            boot_prefix = self._publish_boot_bundle()
+            raw_user_data = self._user_data(boot_prefix).encode("utf-8")
             user_data_b64 = base64.b64encode(raw_user_data).decode("ascii")
             # EC2 rejects encoded user-data above 25600 bytes (16KB raw).
             if len(user_data_b64) > 25000:
