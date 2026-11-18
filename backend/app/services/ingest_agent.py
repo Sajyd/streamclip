@@ -222,6 +222,64 @@ def _buffer_stats() -> dict:
     }
 
 
+def _path_state_file(clean: str) -> Path:
+    safe = clean.replace("/", "_").replace(":", "_")
+    return STATE_DIR / f"seg_{safe}.path"
+
+
+def _remember_path(clean: str) -> None:
+    """Persist MTX path so an agent restart can re-attach the segment loop."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _path_state_file(clean).write_text(clean + "\n")
+    except OSError as exc:
+        _log(f"remember_path_failed path={_public_path_label(clean)} err={exc}")
+
+
+def _paths_from_state() -> list[str]:
+    found: list[str] = []
+    if not STATE_DIR.is_dir():
+        return found
+    try:
+        files = sorted(STATE_DIR.glob("seg_*.path"))
+    except OSError:
+        return found
+    for file in files:
+        try:
+            raw = file.read_text().strip()
+        except OSError:
+            continue
+        clean = _sanitize_path(raw)
+        if clean and clean not in found:
+            found.append(clean)
+    return found
+
+
+def _orphan_loop_pid(clean: str) -> int | None:
+    """PID of an unmanaged streamclip-segment-loop still holding this path."""
+    safe = clean.replace("/", "_").replace(":", "_")
+    pidfile = STATE_DIR / f"seg_{safe}.pid"
+    if not pidfile.exists():
+        return None
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+    except OSError:
+        return None
+    if "streamclip-segment-loop" not in cmdline:
+        return None
+    if clean not in cmdline:
+        return None
+    return pid
+
+
 def _spawn_loop(clean: str) -> subprocess.Popen:
     env = os.environ.copy()
     log_fh = open("/var/log/streamclip-segment.log", "a")  # noqa: SIM115 — kept for child lifetime
@@ -239,6 +297,7 @@ def start_path(path: str) -> dict:
     if clean is None:
         return {"ok": False, "error": "invalid_path"}
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _remember_path(clean)
     with _lock:
         proc = _loops.get(clean)
         if proc is not None and proc.poll() is None:
@@ -248,6 +307,14 @@ def start_path(path: str) -> dict:
                 "status": "already_running",
                 "recorder": "ffmpeg-rtmp",
             }
+        # Orphan from a previous agent process: take ownership with a fresh supervised loop.
+        orphan = _orphan_loop_pid(clean)
+        if orphan is not None:
+            try:
+                os.kill(orphan, signal.SIGTERM)
+            except OSError:
+                pass
+            time.sleep(0.25)
         proc = _spawn_loop(clean)
         _loops[clean] = proc
         _log(f"start path={_public_path_label(clean)} pid={proc.pid} recorder=ffmpeg-rtmp")
@@ -259,10 +326,23 @@ def start_path(path: str) -> dict:
         }
 
 
+def recover_loops() -> int:
+    """Re-start segment loops for every remembered live path (agent reboot safe)."""
+    started = 0
+    for path in _paths_from_state():
+        result = start_path(path)
+        if result.get("status") == "started":
+            started += 1
+    if started:
+        _log(f"recover_loops started={started}")
+    return started
+
+
 def _respawn_dead_loops() -> int:
     """If a segment loop exited, restart it — never tear down the live."""
     restarted = 0
     with _lock:
+        known = set(_loops)
         for path, proc in list(_loops.items()):
             if proc.poll() is None:
                 continue
@@ -273,6 +353,12 @@ def _respawn_dead_loops() -> int:
                 f"respawn path={_public_path_label(path)} "
                 f"old_exit={proc.returncode} new_pid={fresh.pid}"
             )
+    # Paths remembered on disk but missing from memory (post-agent-restart).
+    for path in _paths_from_state():
+        if path in known:
+            continue
+        if start_path(path).get("status") == "started":
+            restarted += 1
     return restarted
 
 
@@ -672,8 +758,9 @@ def main() -> None:
     _load_env()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    recovered = recover_loops()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    _log(f"listening on :{PORT}")
+    _log(f"listening on :{PORT} recovered_loops={recovered}")
     server.serve_forever()
 
 

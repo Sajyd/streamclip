@@ -359,9 +359,17 @@ def patch_dedicated_preview(
     agent_b64 = base64.b64encode(agent_path.read_bytes()).decode("ascii")
     script = f"""
 set -euo pipefail
-mkdir -p /usr/local/bin /etc/streamclip
-echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
-chmod +x /usr/local/bin/streamclip-analysis-agent.py
+mkdir -p /usr/local/bin /etc/streamclip /var/run/streamclip
+echo '{agent_b64}' | base64 -d > /tmp/streamclip-analysis-agent.new
+AGENT_RESTART=0
+if ! cmp -s /tmp/streamclip-analysis-agent.new /usr/local/bin/streamclip-analysis-agent.py 2>/dev/null; then
+  install -m 755 /tmp/streamclip-analysis-agent.new /usr/local/bin/streamclip-analysis-agent.py
+  AGENT_RESTART=1
+  echo "dedicated_agent_updated"
+else
+  echo "dedicated_agent_unchanged"
+fi
+rm -f /tmp/streamclip-analysis-agent.new
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
   if grep -qE '^hls:[[:space:]]*yes' /etc/mediamtx/mediamtx.yml \\
     && grep -qE '^hlsAddress:[[:space:]]*127\\.0\\.0\\.1:8888' /etc/mediamtx/mediamtx.yml; then
@@ -375,9 +383,20 @@ if [ -f /etc/mediamtx/mediamtx.yml ]; then
 fi
 systemctl daemon-reload || true
 systemctl enable --now streamclip-agent || true
-# Agent restart is OK (HLS proxy only); MediaMTX stays up when already configured.
-systemctl restart streamclip-agent || true
-sleep 1
+# Only bounce the agent when its binary changed — a blind restart drops in-memory
+# loop supervision. After any restart, re-/start every remembered live path.
+if [ "$AGENT_RESTART" = "1" ] || ! systemctl is-active --quiet streamclip-agent; then
+  systemctl restart streamclip-agent || true
+  sleep 1
+fi
+for f in /var/run/streamclip/seg_*.path; do
+  [ -f "$f" ] || continue
+  PATH_NAME=$(tr -d '[:space:]' < "$f" || true)
+  [ -n "$PATH_NAME" ] || continue
+  curl -fsS -X POST -H 'Content-Type: application/json' \\
+    -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
+    http://127.0.0.1:8080/start || true
+done
 curl -fsS http://127.0.0.1:8080/health || true
 ss -lntp | grep -E '1935|8080|8888' || true
 """

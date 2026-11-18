@@ -140,10 +140,22 @@ SESSIONFILE="/var/run/streamclip/seg_${{SAFE}}.session"
 LOG="/var/log/streamclip-segment.log"
 WINDOW_S=300
 MIN_BYTES=1000000
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  exit 0
+# Only treat an existing PID as ours if it is this segment-loop for this path.
+# A stale/wrong PIDFILE must not silent-exit (agent would think recording started).
+if [ -f "$PIDFILE" ]; then
+  OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    OLD_CMD=$(tr '\\0' ' ' < "/proc/$OLD_PID/cmdline" 2>/dev/null || true)
+    if echo "$OLD_CMD" | grep -q 'streamclip-segment-loop' \\
+      && echo "$OLD_CMD" | grep -Fq -- "$PATH_NAME"; then
+      exit 0
+    fi
+    kill "$OLD_PID" 2>/dev/null || true
+  fi
+  rm -f "$PIDFILE"
 fi
 echo $$ > "$PIDFILE"
+printf '%s\\n' "$PATH_NAME" > "/var/run/streamclip/seg_${{SAFE}}.path" || true
 SEQ=0
 [ -f "$SEQFILE" ] && SEQ=$(cat "$SEQFILE" 2>/dev/null || echo 0)
 trap 'rm -f "$PIDFILE"' EXIT
@@ -224,6 +236,7 @@ RESP=$(curl -fsS -X POST -H "Content-Type: application/json" \\
   -d "{{\\"event\\":\\"publisher_ready\\",\\"path\\":\\"$PATH_NAME\\",\\"protocol\\":\\"rtmp\\"}}" \\
   "$EVENT_URL" || true)
 SESSION_ID=$(printf '%s' "$RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("stream_session_id") or "")' 2>/dev/null || true)
+printf '%s\\n' "$PATH_NAME" > "/var/run/streamclip/seg_${{SAFE}}.path" || true
 if [ -n "$SESSION_ID" ]; then
   PREV=$(cat "/var/run/streamclip/seg_${{SAFE}}.session" 2>/dev/null | tr -d '[:space:]' || true)
   echo "$SESSION_ID" > "/var/run/streamclip/seg_${{SAFE}}.session"
