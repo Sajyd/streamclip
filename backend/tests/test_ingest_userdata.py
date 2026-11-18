@@ -1,8 +1,11 @@
-"""EC2 user-data must stay under the RunInstances 16 KiB decoded limit."""
+"""EC2 user-data must stay under both RunInstances size limits."""
 
 from __future__ import annotations
 
+import base64
 import gzip
+
+from botocore.handlers import base64_encode_user_data
 
 from app.services.ingest_launcher import AwsSpotLauncher
 
@@ -38,6 +41,12 @@ def test_user_data_is_gzipped_and_never_uploaded() -> None:
 
     assert blob[:2] == b"\x1f\x8b"
     assert len(blob) <= 16384
+    # boto3 encodes UserData. The value EC2 receives must stay <= 25600 bytes.
+    params = {"UserData": blob}
+    base64_encode_user_data(params)
+    encoded = params["UserData"].encode("ascii")
+    assert len(encoded) <= 25600
+    assert base64.b64decode(encoded) == blob
     assert "tmp/boot/" not in script
     assert "BOOT_PREFIX" not in script
     assert "aws s3 cp" not in script.split("cat > /etc/streamclip/agent.env", 1)[0]

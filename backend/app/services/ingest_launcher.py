@@ -7,7 +7,6 @@ fallback host: if launch fails, resolve fails.
 from __future__ import annotations
 
 import asyncio
-import base64
 import gzip
 import io
 import shlex
@@ -628,11 +627,12 @@ systemctl enable --now mediamtx
 
         def _run() -> LaunchResult:
             client = self._client()
-            # Gzip bytes, then base64. AWS decodes once and cloud-init unpacks gzip.
-            # The decoded gzip must stay <= 16384. Hook and ASR keys stay here,
+            # Pass gzip bytes. botocore base64-encodes UserData itself
+            # (handlers.base64_encode_user_data). Encoding here as well makes
+            # the API value exceed the 25600-byte encoded limit. Decoded gzip
+            # must stay <= 16384. Hook and ASR keys stay in this payload,
             # not in the media bucket (every spot can read tmp/*).
             user_data_gz = self._user_data_gzip()
-            user_data_b64 = base64.b64encode(user_data_gz).decode("ascii")
             kwargs: dict = {
                 "ImageId": settings.ingest_ec2_ami_id,
                 "InstanceType": settings.ingest_ec2_instance_type or "t4g.medium",
@@ -640,7 +640,7 @@ systemctl enable --now mediamtx
                 "MaxCount": 1,
                 "SubnetId": settings.ingest_ec2_subnet_id,
                 "SecurityGroupIds": [settings.ingest_ec2_security_group_id],
-                "UserData": user_data_b64,
+                "UserData": user_data_gz,
                 "MetadataOptions": {
                     "HttpTokens": "required",
                     "HttpEndpoint": "enabled",
