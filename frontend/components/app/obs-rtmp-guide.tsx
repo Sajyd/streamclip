@@ -241,6 +241,14 @@ export function PluginConnectStep({ creds }: { creds: Creds | null }) {
         <li className="flex gap-3">
           <span className="font-semibold text-brand-300">4.</span>
           <span>
+            Cochez{" "}
+            <strong className="text-white">Synchroniser le démarrage avec OBS</strong> (Sync
+            start with OBS).
+          </span>
+        </li>
+        <li className="flex gap-3">
+          <span className="font-semibold text-brand-300">5.</span>
+          <span>
             Paramètres → Stream : laissez Twitch / YouTube inchangés. STREAMCLIP reste dans le
             plugin.
           </span>
