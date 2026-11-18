@@ -16,14 +16,19 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-FRAME_EVERY_SEC = 5
-MAX_FRAMES = 60
+# One still every 10s (≤24 per 5-min window). Keyframe-only so the decoder
+# does not fight the RTMP reader on a 2 vCPU box.
+FRAME_EVERY_SEC = 10
+MAX_FRAMES = 24
+EXTRACT_TIMEOUT_S = 60
+_SEEK_SECONDS = (5, 30, 60, 120, 180, 240)
 MIN_MOMENT_MS = 30_000
 MAX_MOMENT_MS = 60_000
 TARGET_MOMENT_MS = 60_000
@@ -81,34 +86,130 @@ def _ffmpeg() -> str:
     raise RuntimeError("ffmpeg not found")
 
 
+def _run_ffmpeg(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"ffmpeg_timeout timeout={timeout}s")
+        return None
+
+
+def _jpeg_frames(out_dir: Path) -> list[Path]:
+    frames = [
+        path
+        for path in out_dir.glob("*.jpg")
+        if path.is_file() and path.stat().st_size > 500
+    ]
+    return sorted(frames)[:MAX_FRAMES]
+
+
 def extract_frames(video: Path, out_dir: Path) -> list[Path]:
+    """Sample stills without decoding every picture of the HD segment.
+
+    A full `fps=1/5` decode of 5 minutes of 1080p returns nothing when ffmpeg
+    is OOM-killed or exits on one corrupt frame, and it is what stalls RTMP.
+    Keyframe sampling is enough for Luna. Any JPEG already written is kept
+    even if ffmpeg's exit code is non-zero.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     if not video.is_file() or video.stat().st_size < 10_000:
         return []
     ff = _ffmpeg()
-    pattern = out_dir / "frame_%04d.jpg"
-    cmd = [
-        ff,
-        "-y",
+    common_in = [
         "-threads",
         "1",
+        "-skip_frame",
+        "nokey",
+        "-fflags",
+        "+discardcorrupt+genpts",
+        "-err_detect",
+        "ignore_err",
         "-i",
         str(video),
-        "-map",
-        "0:v:0",
+        "-an",
+    ]
+    primary = [
+        ff,
+        "-y",
+        *common_in,
         "-vf",
-        f"fps=1/{FRAME_EVERY_SEC},scale=-2:360",
+        (
+            f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{FRAME_EVERY_SEC})',"
+            "scale=-2:360"
+        ),
+        "-fps_mode",
+        "vfr",
         "-frames:v",
         str(MAX_FRAMES),
         "-q:v",
-        "5",
-        str(pattern),
+        "8",
+        str(out_dir / "frame_%04d.jpg"),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        _log(f"extract_frames_fail rc={proc.returncode} err={(proc.stderr or '')[-300:]}")
-        return []
-    return sorted(out_dir.glob("frame_*.jpg"))
+    proc = _run_ffmpeg(primary, timeout=EXTRACT_TIMEOUT_S)
+    found = _jpeg_frames(out_dir)
+    if len(found) >= 4:
+        _log(f"extract_frames_ok count={len(found)} mode=keyframe")
+        return found
+    if proc is not None and proc.returncode != 0:
+        _log(
+            f"extract_frames_key_rc={proc.returncode} kept={len(found)} "
+            f"err={(proc.stderr or '')[-300:]}"
+        )
+    # Live copies often have a broken timeline, so time-based select keeps
+    # one frame. Step through keyframes by index instead.
+    secondary = [
+        ff,
+        "-y",
+        *common_in,
+        "-vf",
+        "select='not(mod(n,3))',scale=-2:360",
+        "-fps_mode",
+        "vfr",
+        "-frames:v",
+        str(MAX_FRAMES),
+        "-q:v",
+        "8",
+        str(out_dir / "kf_%04d.jpg"),
+    ]
+    proc2 = _run_ffmpeg(secondary, timeout=EXTRACT_TIMEOUT_S)
+    found = _jpeg_frames(out_dir)
+    if len(found) >= 4:
+        _log(f"extract_frames_ok count={len(found)} mode=keyframe_index")
+        return found
+    if proc2 is not None and proc2.returncode != 0:
+        _log(
+            f"extract_frames_index_rc={proc2.returncode} kept={len(found)} "
+            f"err={(proc2.stderr or '')[-300:]}"
+        )
+    for index, seconds in enumerate(_SEEK_SECONDS):
+        grab = [
+            ff,
+            "-y",
+            "-threads",
+            "1",
+            "-ss",
+            str(seconds),
+            "-fflags",
+            "+discardcorrupt+genpts",
+            "-err_detect",
+            "ignore_err",
+            "-i",
+            str(video),
+            "-an",
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=-2:360",
+            "-q:v",
+            "8",
+            str(out_dir / f"seek_{index:02d}.jpg"),
+        ]
+        _run_ffmpeg(grab, timeout=20)
+    found = _jpeg_frames(out_dir)
+    _log(f"extract_frames_done count={len(found)} bytes={video.stat().st_size}")
+    return found
 
 
 def extract_audio_wav(video: Path, wav: Path) -> bool:
@@ -434,17 +535,27 @@ def post_analysis_result(payload: dict[str, Any]) -> bool:
             "X-Streamclip-Ingest-Secret": hook,
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
-            _log(f"post_analysis_ok status={resp.status} seq={payload.get('sequence')}")
-            return True
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read()[:400] if exc.fp else b""
-        _log(f"post_analysis_http status={exc.code} body={err_body!r}")
-        return False
-    except Exception as exc:  # noqa: BLE001
-        _log(f"post_analysis_fail err={exc}")
-        return False
+    # The segment is deleted after this returns. Retry while the API or the
+    # path back from the spot is down — the live is still recording.
+    for attempt in range(1, 5):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+                _log(
+                    f"post_analysis_ok status={resp.status} "
+                    f"seq={payload.get('sequence')} attempt={attempt}"
+                )
+                return True
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read()[:400] if exc.fp else b""
+            _log(
+                f"post_analysis_http status={exc.code} attempt={attempt} body={err_body!r}"
+            )
+            if 400 <= exc.code < 500 and exc.code != 429:
+                return False
+        except Exception as exc:  # noqa: BLE001
+            _log(f"post_analysis_fail attempt={attempt} err={exc}")
+        time.sleep(min(8, attempt * 2))
+    return False
 
 
 def analyze_segment_file(
@@ -476,7 +587,7 @@ def analyze_segment_file(
             "transcript_preview": _clip(transcript_text, 280),
             "model": model,
         }
-        if frames:
+        if frames or transcript_text.strip():
             try:
                 moments, model, diagnostics = luna_analyze(
                     transcript_text=transcript_text,
@@ -484,6 +595,7 @@ def analyze_segment_file(
                     frame_paths=frames,
                 )
                 moments = _attach_words(moments, words)
+                diagnostics["frames"] = len(frames)
             except Exception as exc:
                 provider = "bedrock_failed"
                 diagnostics["empty_reason"] = "luna_error"
@@ -491,10 +603,10 @@ def analyze_segment_file(
                 diagnostics["frames"] = len(frames)
                 _log(f"luna_fail seq={sequence} err={exc}")
         else:
-            provider = "skipped_no_frames"
-            diagnostics["empty_reason"] = "no_frames"
+            provider = "skipped_no_media"
+            diagnostics["empty_reason"] = "no_frames_no_transcript"
             diagnostics["frames"] = 0
-            _log(f"skip_no_frames seq={sequence} size={size_bytes}")
+            _log(f"skip_no_media seq={sequence} size={size_bytes}")
 
         payload = {
             "stream_session_id": stream_session_id,

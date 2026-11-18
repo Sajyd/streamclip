@@ -1,4 +1,4 @@
-"""Launch / terminate dedicated t4g.small spot instances for ingest.
+"""Launch / terminate dedicated t4g.medium spot instances for ingest.
 
 Each organization gets its own EC2 (unique public IP). There is no shared
 fallback host: if launch fails, resolve fails.
@@ -267,25 +267,76 @@ while true; do
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
   ANALYZE="/var/lib/streamclip/segments/analyze_${{SAFE}}_$(printf %04d "$SEQ").mp4"
   rm -f "$PART" "$OUT" "$ANALYZE"
-  # Local RTMP copy into fragmented MP4 (avoids moov stalls / sparse frames).
-  # No wallclock remapping — keeps source timestamps and full bitrate.
-  if ffmpeg -hide_banner -y \\
-      -rw_timeout 15000000 \\
-      -fflags +genpts+igndts \\
+  # Stream-copy the local RTMP. Do not ignore DTS (igndts stretches one video
+  # frame across a congestion hole — picture frozen, audio still moving).
+  # Keep the input queue modest: 4096 decoded-size packets plus a parallel
+  # frame extract was enough to stall RTMP on 2 GiB.
+  # OBS can stay connected to the edge while this reader drops or hangs
+  # (librtmp often ignores -rw_timeout). Watch the file: if it stops growing,
+  # kill ffmpeg and open a new read. Never exit the loop.
+  ffmpeg -hide_banner -loglevel warning -y \\
+      -threads 1 \\
+      -thread_queue_size 1024 \\
+      -analyzeduration 2000000 -probesize 5000000 \\
+      -rw_timeout 20000000 \\
+      -fflags +genpts+discardcorrupt \\
+      -err_detect ignore_err \\
       -i "rtmp://127.0.0.1:1935/${{PATH_NAME}}" \\
       -t "$RECORD_S" \\
-      -map 0 \\
+      -map "0:v:0" -map "0:a:0?" \\
       -c copy \\
+      -avoid_negative_ts make_zero \\
+      -max_muxing_queue_size 1024 \\
       -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof \\
-      "$PART" 2>>"$LOG"; then
-    if ffmpeg -y -i "$PART" -c copy -movflags +faststart "$OUT" 2>>"$LOG"; then
+      "$PART" >>"$LOG" 2>&1 &
+  FF_PID=$!
+  LAST_SIZE=0
+  STALL=0
+  STARTED=$SECONDS
+  LIMIT_S=$((RECORD_S + 45))
+  while kill -0 "$FF_PID" 2>/dev/null; do
+    sleep 2
+    SIZE_NOW=0
+    if [ -f "$PART" ]; then
+      SIZE_NOW=$(stat -c%s "$PART" 2>/dev/null || echo 0)
+    fi
+    if [ "$SIZE_NOW" -gt "$LAST_SIZE" ]; then
+      LAST_SIZE=$SIZE_NOW
+      STALL=0
+    else
+      STALL=$((STALL + 2))
+    fi
+    ELAPSED=$((SECONDS - STARTED))
+    if [ "$LAST_SIZE" -eq 0 ]; then
+      MAX_STALL=20
+    else
+      MAX_STALL=15
+    fi
+    if [ "$STALL" -ge "$MAX_STALL" ] || [ "$ELAPSED" -ge "$LIMIT_S" ]; then
+      if [ "$STALL" -ge "$MAX_STALL" ]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reconnect path=$PATH_NAME seq=$SEQ size=$LAST_SIZE stall=$STALL" >>"$LOG" || true
+        curl -fsS --max-time 8 -X POST -H "Content-Type: application/json" \\
+          -H "X-Streamclip-Ingest-Secret: $HOOK" \\
+          -d "{{\\"event\\":\\"tick\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"processed_ms\\":1}}" \\
+          "$EVENT_URL" >/dev/null 2>&1 || true
+      fi
+      kill -TERM "$FF_PID" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$FF_PID" 2>/dev/null || true
+      break
+    fi
+  done
+  wait "$FF_PID" 2>/dev/null || true
+  # Keep a partial window: a stall at the end must not throw away the minutes already captured.
+  if [ -f "$PART" ]; then
+    if timeout 60 ffmpeg -y -loglevel error -fflags +genpts -i "$PART" \\
+        -map "0:v:0" -map "0:a:0?" -c copy \\
+        -avoid_negative_ts make_zero -movflags +faststart "$OUT" >>"$LOG" 2>&1; then
       rm -f "$PART"
     else
-      mv -f "$PART" "$OUT" 2>/dev/null || OUT="$PART"
+      mv -f "$PART" "$OUT" 2>/dev/null || OUT=""
     fi
   else
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
-    rm -f "$PART" "$OUT"
     OUT=""
   fi
   SIZE=0
@@ -296,14 +347,28 @@ while true; do
     KEY="tmp/lives/${{LIVE_ID}}/seg_$(printf %04d "$SEQ").mp4"
     exec 200>"$LOCKFILE"
     flock -x 200
+    UPLOADED=1
     if [ -n "${{S3_BUCKET:-}}" ]; then
-      aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" || true
+      UPLOADED=0
+      for _n in 1 2 3 4 5; do
+        if aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" --only-show-errors; then
+          UPLOADED=1
+          break
+        fi
+        sleep 2
+      done
     fi
-    # Ack upload on API. A quota_exhausted ack must not be analyzed.
+    if [ "$UPLOADED" != 1 ]; then
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) upload_fail path=$PATH_NAME seq=$SEQ key=$KEY" >>"$LOG" || true
+    fi
+    # Ack only after the object is actually on S3. Analysis still runs from the local file.
+    ACK=""
+    if [ "$UPLOADED" = 1 ]; then
     ACK=$(curl -fsS --max-time 20 -X POST -H "Content-Type: application/json" \\
       -H "X-Streamclip-Ingest-Secret: $HOOK" \\
       -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":$((RECORD_S * 1000))}}" \\
       "$EVENT_URL" || true)
+    fi
     if printf '%s' "$ACK" | grep -q 'quota_exhausted'; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) quota_drop path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
       rm -f "$OUT" "$PART" "$ANALYZE"
@@ -313,10 +378,19 @@ while true; do
     fi
     mv -f "$OUT" "$ANALYZE"
     # Hand local file to :8080 — frames / ASR / Luna on this EC2, then DB via API.
-    curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \\
-      -d "{{\\"video_path\\":\\"${{ANALYZE}}\\",\\"stream_session_id\\":\\"${{LIVE_ID}}\\",\\"sequence\\":${{SEQ}},\\"storage_key\\":\\"${{KEY}}\\",\\"size_bytes\\":${{SIZE}}}}" \\
-      "http://127.0.0.1:8080/analyze" || \\
+    QUEUED=0
+    for _n in 1 2 3 4 5; do
+      if curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \\
+        -d "{{\\"video_path\\":\\"${{ANALYZE}}\\",\\"stream_session_id\\":\\"${{LIVE_ID}}\\",\\"sequence\\":${{SEQ}},\\"storage_key\\":\\"${{KEY}}\\",\\"size_bytes\\":${{SIZE}}}}" \\
+        "http://127.0.0.1:8080/analyze"; then
+        QUEUED=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$QUEUED" != 1 ]; then
       echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) analyze_queue_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
+    fi
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
     SEQ=$((SEQ + 1))
     echo "$SEQ" > "$SEQFILE" || true
@@ -327,7 +401,8 @@ while true; do
   else
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
     rm -f "$OUT" "$PART" "$ANALYZE"
-    # Failure: start the next full 5-min capture immediately (do not sleep out the rest).
+    # Read died or the publisher is between relays. Retry; do not exit.
+    sleep 2
     continue
   fi
 done
@@ -369,16 +444,10 @@ cat > /usr/local/bin/streamclip-on-not-ready <<'OFFREADY'
 #!/bin/bash
 PATH_NAME="$1"
 # shellcheck disable=SC1091
+# Do not stop the segment loop. A publisher flap (edge relay reconnect, encoder
+# stall) used to kill the recorder while OBS stayed connected, and nothing
+# opened a new read. The loop reconnects to local RTMP on its own.
 [ -f /etc/streamclip/agent.env ] && . /etc/streamclip/agent.env
-curl -fsS -X POST -H "Content-Type: application/json" \\
-  -d "{{\\"path\\":\\"$PATH_NAME\\"}}" \\
-  "http://127.0.0.1:8080/stop" || true
-SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
-PIDFILE="/var/run/streamclip/seg_$SAFE.pid"
-if [ -f "$PIDFILE" ]; then
-  kill "$(cat "$PIDFILE")" 2>/dev/null || true
-  rm -f "$PIDFILE"
-fi
 curl -fsS -X POST -H "Content-Type: application/json" \\
   -H "X-Streamclip-Ingest-Secret: $HOOK" \\
   -d "{{\\"event\\":\\"publisher_disconnect\\",\\"path\\":\\"$PATH_NAME\\",\\"protocol\\":\\"rtmp\\"}}" \\
@@ -389,7 +458,8 @@ chmod +x /usr/local/bin/streamclip-on-not-ready
 # Quote heredoc so $MTX_PATH is written literally for MediaMTX to expand at runtime.
 cat > /etc/mediamtx/mediamtx.yml <<'YAML'
 logLevel: info
-# 1080p60 + HLS + segment ffmpeg reader: large write queue (power of 2).
+# 1080p60 + HLS + segment ffmpeg reader. 8192 is a power of 2 and still
+# absorbs a stall, without pinning most of a 4 GiB box on queued packets.
 writeQueueSize: 8192
 # OBS / encoder stalls longer than 15s used to drop the publisher and fire
 # runOnNotReady while the agent stayed up — keep the RTMP path alive.
@@ -404,8 +474,8 @@ webrtc: no
 hls: yes
 hlsAddress: 127.0.0.1:8888
 hlsAlwaysRemux: yes
-hlsSegmentCount: 7
-hlsSegmentDuration: 1s
+hlsSegmentCount: 12
+hlsSegmentDuration: 2s
 rtsp: yes
 rtspAddress: :8554
 authMethod: http
@@ -491,7 +561,7 @@ systemctl enable --now mediamtx
                 )
             kwargs: dict = {
                 "ImageId": settings.ingest_ec2_ami_id,
-                "InstanceType": settings.ingest_ec2_instance_type or "t4g.small",
+                "InstanceType": settings.ingest_ec2_instance_type or "t4g.medium",
                 "MinCount": 1,
                 "MaxCount": 1,
                 "SubnetId": settings.ingest_ec2_subnet_id,
@@ -548,7 +618,7 @@ systemctl enable --now mediamtx
     def _candidate_subnets(self, client, primary: str) -> list[str]:
         """Public subnets in the configured VPC. Primary AZ first, then the others.
 
-        eu-north-1b often has no t4g.small capacity; 1a and 1c do.
+        eu-north-1b often has no t4g.medium capacity; 1a and 1c do.
         """
         try:
             described = client.describe_subnets(SubnetIds=[primary])["Subnets"][0]

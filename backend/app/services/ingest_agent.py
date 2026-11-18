@@ -406,6 +406,12 @@ def _ensure_analyze_workers(n: int = 1) -> None:
 
 def _analyze_worker() -> None:
     global _analyze_inflight, _analyze_done, _analyze_failed
+    # Decoding the previous segment must not starve MediaMTX / the recorder.
+    # A stalled RTMP read makes OBS drop video frames while audio still fits.
+    try:
+        os.nice(15)
+    except (AttributeError, OSError):
+        pass
     while True:
         job: dict[str, Any] | None = None
         with _analyze_lock:
@@ -508,6 +514,10 @@ def stop_path(path: str) -> dict:
             pidfile.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass
+    try:
+        _path_state_file(clean).unlink(missing_ok=True)
+    except OSError:
+        pass
     _log(f"stop path={_public_path_label(clean)} killed={killed}")
     return {"ok": True, "path": _public_path_label(clean), "killed": killed}
 
@@ -619,7 +629,7 @@ def _proxy_hls(handler: BaseHTTPRequestHandler, subpath: str) -> None:
         return
     upstream = f"{HLS_UPSTREAM.rstrip('/')}/{subpath.lstrip('/')}"
     try:
-        with urllib.request.urlopen(upstream, timeout=8) as resp:  # noqa: S310
+        with urllib.request.urlopen(upstream, timeout=20) as resp:  # noqa: S310
             data = resp.read()
             content_type = resp.headers.get("Content-Type") or "application/octet-stream"
             handler.send_response(200)
@@ -902,11 +912,29 @@ class Handler(BaseHTTPRequestHandler):
         self._json(405, {"ok": False, "error": "method_not_allowed"})
 
 
+def _supervise_loops() -> None:
+    """Bring a dead segment loop back even if nothing is polling /health.
+
+    A publisher flap must not end analysis: the loop reconnects to local RTMP
+    while OBS is still live. If the bash process itself exits, start it again.
+    """
+    while True:
+        time.sleep(8)
+        try:
+            restarted = _respawn_dead_loops()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"supervise_fail err={exc}")
+            continue
+        if restarted:
+            _log(f"supervise respawned={restarted}")
+
+
 def main() -> None:
     _load_env()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_analyze_workers()
+    threading.Thread(target=_supervise_loops, name="loop-supervise", daemon=True).start()
     recovered = recover_loops()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     _log(f"listening on :{PORT} recovered_loops={recovered}")
