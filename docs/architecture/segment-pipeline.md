@@ -1,39 +1,31 @@
-# Pipeline segments 5 min (t4g.small)
+# Pipeline segments 5 min (per-org t4g.small)
 
-Stack volontairement simple : **une seule instance** `t4g.small` (spot,
-`eu-north-1`) reçoit le live, enregistre, analyse, puis passe au créneau
-suivant. Pas de flotte GPU, pas de c7g.large.
+Stack volontairement simple : **une instance spot par organisation**
+`t4g.small` (`eu-north-1`) reçoit le live, enregistre, analyse, puis passe
+au créneau suivant. Vercel ne fait **que** l’app web + persistance DB /
+affichage dashboard — jamais FFmpeg, ASR ni Luna.
 
-## Boucle
+## Boucle (tout sur l’EC2)
 
-1. OBS → RTMPS/SRT → MediaMTX sur l’instance.
+1. OBS → RTMPS/SRT → edge → relay RTMP vers MediaMTX sur l’instance dédiée.
 2. Toutes les **5 minutes**, FFmpeg enregistre un extrait HD (stream copy) :
    `tmp/lives/<session_id>/seg_XXXX.mp4` sur S3.
-3. Sur le même créneau de 5 minutes, l’instance :
-   - extrait 1 frame / 5 s en **480p** ;
+3. Le segment est passé à l’agent **:8080** (`POST /analyze`) qui :
+   - extrait 1 frame / 5 s ;
    - transcrit les 5 minutes (ASR openai-compatible / Groq) ;
-   - envoie frames + transcript à **Bedrock GPT-6 Luna** (`us.openai.gpt-6-luna`) ;
+   - envoie frames + transcript à **Bedrock GPT-6 Luna** ;
    - reçoit des moments viraux 30–60 s (préférence 60), non chevauchants,
      avec timings mot à mot, score, titre, description+hashtags, et position
      cam streamer `(x,y)` sur un plan **1920×1080** si détectée.
-4. Persistance DB : `media_segments` + `analysis_windows` +
-   `highlight_candidates` (JSON moments dans `score_breakdown` /
-   `verification`).
+4. L’agent POST le JSON vers `/ingest/hooks/segment-analysis` → DB :
+   `media_segments` + `analysis_windows` + `highlight_candidates`.
 5. Fin de live → la boucle s’arrête ; l’instance est terminée (spot / stop).
 
-CLI sur l’instance :
+## Frontend (Vercel)
 
-```bash
-python -m app.cli live-loop \
-  --session-id <uuid> \
-  --input-url rtmp://127.0.0.1/live/<public_id>
-```
-
-## Frontend
-
-`/highlights` : Player Remotion 9:16 sur l’URL présignée de l’extrait 1080p,
-un highlight par élément du tableau, sous-titres synchronisés. Si
-`camera.detected`, un second viewport de la même vidéo est centré sur `(x,y)`.
+`/live` poll les highlights de la session ; `/highlights` : Player Remotion
+9:16 sur l’URL présignée, sous-titres synchronisés. Si `camera.detected`,
+un second viewport est centré sur `(x,y)`.
 
 ## Coûts (ordre de grandeur)
 

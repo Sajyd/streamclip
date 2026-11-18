@@ -178,6 +178,8 @@ locals {
 
     cat > /usr/local/bin/streamclip-edge-relay <<'RELAY'
     #!/bin/bash
+    # Poll until the per-org spot is ready (cold boot + MediaMTX userdata).
+    # runOnNotReady kills this process when OBS disconnects — no hard timeout.
     PATH_NAME="$1"
     SAFE=$(echo "$PATH_NAME" | tr '/:' '__')
     mkdir -p /var/run/streamclip
@@ -188,7 +190,9 @@ locals {
     echo $$ > "$PIDFILE"
     trap 'rm -f "$PIDFILE"' EXIT
     TARGET=""
-    for _ in $(seq 1 60); do
+    ATTEMPT=0
+    while true; do
+      ATTEMPT=$((ATTEMPT + 1))
       RESP=$(curl -fsS -G -H "X-Streamclip-Ingest-Secret: $HOOK" \
         --data-urlencode "path=$PATH_NAME" "$RELAY_URL" || true)
       TARGET=$(printf '%s' "$RESP" | sed -n 's/.*"rtmp_push_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -196,12 +200,16 @@ locals {
       if [ "$STATUS" = "ready" ] && [ -n "$TARGET" ]; then
         break
       fi
+      # Quota / subscription denied after auth race — stop hammering.
+      if [ "$STATUS" = "unavailable" ] && echo "$RESP" | grep -qiE 'quota|abonnement|subscription|refus'; then
+        echo "relay forbidden for $PATH_NAME: $RESP" >&2
+        exit 1
+      fi
+      if [ $((ATTEMPT % 20)) -eq 0 ]; then
+        echo "relay waiting spot path=$PATH_NAME attempt=$ATTEMPT status=$STATUS" >&2
+      fi
       sleep 3
     done
-    if [ -z "$TARGET" ]; then
-      echo "relay target unavailable for $PATH_NAME" >&2
-      exit 1
-    fi
     curl -fsS -X POST -H Content-Type:application/json \
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
       -d "{\"event\":\"publisher_ready\",\"path\":\"$PATH_NAME\",\"protocol\":\"rtmp\"}" \

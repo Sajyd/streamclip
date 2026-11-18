@@ -226,7 +226,7 @@ async def persist_segment_analysis(
             )
         )
 
-    # Quota / processed_ms is charged by analysis.segment after persist succeeds.
+    # Quota / processed_ms is charged by the segment-analysis persist hook after this.
     stream.media_duration_ms = max(stream.media_duration_ms or 0, end_ms)
     stream.clips_count = (stream.clips_count or 0) + len(moments)
 

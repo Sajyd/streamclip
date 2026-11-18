@@ -728,3 +728,42 @@ class IngestEventHookOut(ApiModel):
 
     message: str = "ok"
     stream_session_id: uuid.UUID | None = None
+
+
+class SegmentAnalysisMomentIn(ApiModel):
+    """One viral moment already extracted on the per-user EC2 spot."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    start_ms: int = Field(ge=0, le=300_000)
+    end_ms: int = Field(ge=0, le=300_000)
+    score: float = Field(ge=0, le=1)
+    title: Annotated[str, Field(max_length=200)] = "Moment fort"
+    description: Annotated[str, Field(max_length=2000)] = ""
+    hashtags: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list)
+    category: Annotated[str, Field(max_length=32)] = "punchline"
+    words: list[dict[str, Any]] = Field(default_factory=list)
+    camera: dict[str, Any] = Field(default_factory=dict)
+
+
+class SegmentAnalysisHookRequest(ApiModel):
+    """Persist result of on-box (:8080) analysis — no FFmpeg/ASR/Luna on the API."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    stream_session_id: uuid.UUID
+    sequence: int = Field(ge=0, le=10_000)
+    storage_key: Annotated[str, Field(min_length=1, max_length=512)]
+    size_bytes: int = Field(default=0, ge=0)
+    moments: list[SegmentAnalysisMomentIn] = Field(default_factory=list)
+    transcript_text: Annotated[str, Field(max_length=100_000)] = ""
+    transcript_words: list[dict[str, Any]] = Field(default_factory=list)
+    frames: int = Field(default=0, ge=0, le=120)
+    model: Annotated[str, Field(max_length=128)] = "us.openai.gpt-6-luna"
+    provider: Annotated[str, Field(max_length=64)] = "bedrock"
+
+
+class SegmentAnalysisHookOut(ApiModel):
+    message: str = "ok"
+    moments: int = 0
+    stream_session_id: uuid.UUID | None = None

@@ -6,15 +6,19 @@ from uuid import UUID
 
 import httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import select
 
 from app.context import AppContext
+from app.core import release
 from app.core.ids import uuid7
 from app.models.enums import IngestProtocol, StreamSessionStatus
 from app.models.media import StreamSession
 from app.services.bedrock_luna import CameraBox, ViralMoment
 from app.services.segment_pipeline import persist_segment_analysis
 from tests.helpers import API, register
+
+HOOK_SECRET = "ingest-hook-highlights-secret-32bx"
 
 
 async def _seed_session(ctx: AppContext, organization_id: UUID) -> StreamSession:
@@ -29,6 +33,69 @@ async def _seed_session(ctx: AppContext, organization_id: UUID) -> StreamSession
         session.add(stream)
         await session.flush()
         return stream
+
+
+@pytest.mark.asyncio
+async def test_onbox_segment_analysis_hook_persists_highlights(
+    client: httpx.AsyncClient, ctx: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EC2 :8080 posts finished analysis JSON; API only writes DB rows."""
+    monkeypatch.setattr(release, "INGEST_KEYS_AVAILABLE", True)
+    ctx.settings.ingest_hook_secret = SecretStr(HOOK_SECRET)
+    account = await register(client, email="onbox-hook@example.com")
+    stream = await _seed_session(ctx, account.organization_id)
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    posted = await client.post(
+        f"{API}/ingest/hooks/segment-analysis",
+        headers=hook,
+        json={
+            "stream_session_id": str(stream.id),
+            "sequence": 0,
+            "storage_key": f"tmp/lives/{stream.id}/seg_0000.mp4",
+            "size_bytes": 5_000_000,
+            "frames": 60,
+            "model": "us.openai.gpt-6-luna",
+            "provider": "onbox",
+            "transcript_text": "moment fort en live",
+            "transcript_words": [
+                {"text": "moment", "start_ms": 1000, "end_ms": 1400},
+                {"text": "fort", "start_ms": 1400, "end_ms": 1800},
+            ],
+            "moments": [
+                {
+                    "start_ms": 10_000,
+                    "end_ms": 70_000,
+                    "score": 0.88,
+                    "title": "Clip on-box",
+                    "description": "Extrait #live",
+                    "hashtags": ["#live"],
+                    "category": "punchline",
+                    "words": [{"text": "moment", "start_ms": 1000, "end_ms": 1400}],
+                    "camera": {"detected": True, "x": 1600, "y": 200},
+                }
+            ],
+        },
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["moments"] == 1
+
+    listed = await client.get(
+        f"{API}/highlights",
+        params={"stream_session_id": str(stream.id)},
+        headers=account.headers,
+    )
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert len(items) == 1
+    assert items[0]["title"] == "Clip on-box"
+    assert items[0]["media_available"] is True
+    assert items[0]["stream_session_id"] == str(stream.id)
+
+    async with ctx.db.system_tx() as session:
+        refreshed = await session.get(StreamSession, stream.id)
+        assert refreshed is not None
+        assert refreshed.processed_ms == 300_000
 
 
 @pytest.mark.asyncio

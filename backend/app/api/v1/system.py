@@ -91,10 +91,14 @@ async def readyz(ctx: Ctx, deep: bool = False) -> JSONResponse:
 
 @router.get("/internal/cron/drain", dependencies=[Depends(require_cron_secret)])
 async def cron_drain(request: Request, ctx: Ctx) -> dict[str, Any]:
-    """Frequent drain for retries, segment analysis, and soft-disconnect finalize."""
+    """Frequent drain for email/default work and soft-disconnect finalize.
+
+    Live segment analysis is NOT drained here — it runs on each org's EC2 :8080.
+    """
     summary = await run_due_tasks(
         ctx,
         worker=f"drain-{getattr(request.state, 'request_id', 'unknown')}",
+        queues=["default", "ingest"],
         max_tasks=40,
         time_budget_seconds=50.0,
     )
@@ -113,6 +117,7 @@ async def cron_maintenance(request: Request, ctx: Ctx) -> dict[str, Any]:
     summary = await run_due_tasks(
         ctx,
         worker=f"cron-{getattr(request.state, 'request_id', 'unknown')}",
+        queues=["default", "ingest", "analysis"],
         max_tasks=200,
         time_budget_seconds=50.0,
     )

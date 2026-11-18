@@ -30,6 +30,8 @@ from app.schemas.api import (
     IngestResolveRequest,
     LivePlaybackOut,
     Message,
+    SegmentAnalysisHookOut,
+    SegmentAnalysisHookRequest,
     StreamKeyIssueRequest,
     StreamKeyOut,
     StreamSessionList,
@@ -505,13 +507,18 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
             await session.flush()
         from app.tasks.queue import enqueue
 
+        # Per-live idempotency: every new session can (re)launch a spot after
+        # idle terminate. Forever-org keys blocked relaunch on the next live.
         await enqueue(
             session,
             "ingest.ensure_node",
-            {"organization_id": str(key.organization_id)},
+            {
+                "organization_id": str(key.organization_id),
+                "stream_session_id": str(stream.id),
+            },
             queue="ingest",
             organization_id=key.organization_id,
-            idempotency_key=f"ensure-node:{key.organization_id}",
+            idempotency_key=f"ensure-node:{key.organization_id}:{stream.id}",
         )
         _pipeline_audit(
             session,
@@ -528,7 +535,7 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
             },
         )
     # Return immediately — MediaMTX auth must stay fast or OBS flaps / times out.
-    # Spot boot continues via ingest.ensure_node + relay-target polling / drain cron.
+    # Spot boot: ingest.ensure_node (drain cron) + edge relay-target sync launch.
     return Response(status_code=200)
 
 
@@ -642,13 +649,15 @@ async def relay_target(
 async def mediamtx_event(
     body: IngestEventHookRequest, request: Request, ctx: Ctx
 ) -> IngestEventHookOut:
-    """Publisher disconnect / segment upload / heartbeat from the ingest agent."""
+    """Publisher disconnect / segment upload ack / heartbeat from the EC2 agent.
+
+    Segment analysis (frames / ASR / Luna) runs on the per-user spot (:8080).
+    This hook only acks uploads and session state — it never runs FFmpeg/Luna.
+    """
     _require_hook_secret(request, ctx)
     public_id = _public_id_from_path(body.path)
     if public_id is None:
         return IngestEventHookOut(message="ignored")
-    queued_transcription = False
-    queued_segment = False
     stream_session_id = None
     async with ctx.db.system_tx() as session:
         key = await ingest_service.find_key_by_public_id(session, public_id)
@@ -697,30 +706,13 @@ async def mediamtx_event(
             # Keep the spot warm during the grace window (finalize / stale
             # closer schedules termination if the publisher never returns).
         elif event == "segment" and body.storage_key and body.sequence is not None:
-            # Upload ack only — quota is charged after analysis.segment succeeds
-            # (5 min per analyzed window). Ticks do not bill.
+            # Upload ack only. Quota is charged when :8080 posts segment-analysis.
             await ingest_service.resume_session(session, stream)
             stream.last_media_at = datetime.now(UTC)
             await session.flush()
             await ingest_nodes.cancel_idle_termination(
                 session, organization_id=key.organization_id
             )
-            from app.tasks.queue import enqueue
-
-            await enqueue(
-                session,
-                "analysis.segment",
-                {
-                    "stream_session_id": str(stream.id),
-                    "sequence": body.sequence,
-                    "storage_key": body.storage_key,
-                    "size_bytes": body.size_bytes or 0,
-                },
-                queue="analysis",
-                organization_id=key.organization_id,
-                idempotency_key=f"segment:{stream.id}:{body.sequence}",
-            )
-            queued_segment = True
         elif event in ("processed", "tick") and body.processed_ms:
             # Heartbeat only — do not bill (quota = analyzed 5-min segments).
             await ingest_service.resume_session(session, stream)
@@ -751,32 +743,89 @@ async def mediamtx_event(
             },
         )
         await ingest_nodes.terminate_due_nodes(session, ctx.settings)
-    if queued_transcription:
-        # Serverless: run newly queued analysis tasks before the response returns.
-        from app.tasks.queue import run_due_tasks
-
-        await run_due_tasks(
-            ctx,
-            worker=f"ingest-{getattr(request.state, 'request_id', 'hook')}",
-            queues=["analysis"],
-            kinds=["analysis.transcribe"],
-            max_tasks=4,
-            time_budget_seconds=20.0,
-        )
-    if queued_segment:
-        # Best-effort kick only — never hold the ingest agent on analysis.
-        # A failed/slow segment must not block the next 5-min window.
-        from app.tasks.queue import run_due_tasks
-
-        try:
-            await run_due_tasks(
-                ctx,
-                worker=f"segment-{getattr(request.state, 'request_id', 'hook')}",
-                queues=["analysis"],
-                kinds=["analysis.segment"],
-                max_tasks=1,
-                time_budget_seconds=8.0,
-            )
-        except Exception:  # noqa: BLE001 — ack already committed; drain cron retries
-            pass
     return IngestEventHookOut(message="ok", stream_session_id=stream_session_id)
+
+
+@router.post("/ingest/hooks/segment-analysis", response_model=SegmentAnalysisHookOut)
+async def segment_analysis_persist(
+    body: SegmentAnalysisHookRequest, request: Request, ctx: Ctx
+) -> SegmentAnalysisHookOut:
+    """Thin DB write for highlights already extracted on the per-user EC2 :8080 agent.
+
+    Never downloads video, never runs FFmpeg/ASR/Bedrock — that work stays on the spot.
+    """
+    _require_hook_secret(request, ctx)
+    from app.services.bedrock_luna import CameraBox, ViralMoment
+    from app.services.segment_pipeline import WINDOW_MS, persist_segment_analysis
+
+    moments: list[ViralMoment] = []
+    for raw in body.moments:
+        cam = raw.camera or {}
+        moments.append(
+            ViralMoment(
+                start_ms=raw.start_ms,
+                end_ms=raw.end_ms,
+                score=raw.score,
+                title=raw.title,
+                description=raw.description,
+                hashtags=list(raw.hashtags)[:12],
+                words=list(raw.words or []),
+                camera=CameraBox(
+                    detected=bool(cam.get("detected")),
+                    x=max(0, min(1919, int(cam.get("x") or 960))),
+                    y=max(0, min(1079, int(cam.get("y") or 200))),
+                ),
+                category=raw.category or "punchline",
+            )
+        )
+
+    async with ctx.db.system_tx() as session:
+        stream = await session.get(StreamSession, body.stream_session_id)
+        if stream is None:
+            raise NotFoundError("Session introuvable.", code="stream_not_found")
+        await ingest_service.resume_session(session, stream)
+        await persist_segment_analysis(
+            session,
+            stream=stream,
+            sequence=body.sequence,
+            storage_key=body.storage_key,
+            size_bytes=body.size_bytes,
+            moments=moments,
+            transcript_text=body.transcript_text,
+            transcript_words=list(body.transcript_words or []),
+            frames=body.frames,
+            model=body.model,
+            provider=body.provider or "onbox",
+        )
+        already = stream.processed_ms or 0
+        target = (body.sequence + 1) * WINDOW_MS
+        unbilled = max(0, target - already)
+        if unbilled > 0:
+            await ingest_service.record_processed_tick(
+                session,
+                stream,
+                processed_ms=unbilled,
+                media_end_ms=target,
+            )
+        await ingest_nodes.cancel_idle_termination(
+            session, organization_id=stream.organization_id
+        )
+        _pipeline_audit(
+            session,
+            "ingest.segment_analysis",
+            organization_id=stream.organization_id,
+            stream_id=stream.id,
+            request=request,
+            details={
+                "sequence": body.sequence,
+                "storage_key": body.storage_key,
+                "moments": len(moments),
+                "frames": body.frames,
+                "provider": body.provider,
+            },
+        )
+    return SegmentAnalysisHookOut(
+        message="ok",
+        moments=len(moments),
+        stream_session_id=body.stream_session_id,
+    )

@@ -67,7 +67,11 @@ class AwsSpotLauncher:
         )
 
     def _user_data(self) -> str:
-        """MediaMTX 1.12 + on-box 5-min HD segment loop → S3 → API analysis."""
+        """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
+
+        Vercel only receives segment acks and persisted highlight JSON — never
+        runs FFmpeg / Bedrock for live segments.
+        """
         settings = self._settings
         auth_url = (settings.ingest_api_auth_url or "").strip()
         event_url = (settings.ingest_api_event_url or "").strip()
@@ -84,6 +88,14 @@ class AwsSpotLauncher:
             or settings.s3_region
             or "eu-north-1"
         )
+        asr_provider = (settings.asr_provider or "none").strip()
+        asr_key = (
+            settings.asr_api_key.get_secret_value() if settings.asr_api_key else ""
+        )
+        asr_base = (settings.asr_base_url or "https://api.groq.com/openai/v1").strip()
+        asr_model = (settings.asr_model or "whisper-large-v3-turbo").strip()
+        bedrock_region = (settings.bedrock_region or "us-east-1").strip()
+        bedrock_model = (settings.bedrock_model or "us.openai.gpt-6-luna").strip()
         # Secret on query string: MediaMTX 1.12 has no authHTTPAdditionalHeaders.
         auth_with_secret = f"{auth_url}?ingest_secret={hook}" if auth_url else ""
         # Escape single quotes for embedding in shell single-quoted strings.
@@ -95,15 +107,25 @@ class AwsSpotLauncher:
         bucket_q = _sq(bucket)
         region_q = _sq(region)
         auth_q = _sq(auth_with_secret)
+        asr_provider_q = _sq(asr_provider)
+        asr_key_q = _sq(asr_key)
+        asr_base_q = _sq(asr_base)
+        asr_model_q = _sq(asr_model)
+        bedrock_region_q = _sq(bedrock_region)
+        bedrock_model_q = _sq(bedrock_model)
 
         agent_path = Path(__file__).with_name("ingest_agent.py")
         agent_b64 = base64.b64encode(agent_path.read_bytes()).decode("ascii")
+        onbox_path = Path(__file__).with_name("ingest_onbox_analyze.py")
+        onbox_b64 = base64.b64encode(onbox_path.read_bytes()).decode("ascii")
 
-        # Native MediaMTX + :8080 analysis agent (5-min buffer → S3 → API).
+        # Native MediaMTX + :8080 analysis (5-min buffer → S3 → local Luna).
         # AL2023 has no ffmpeg package — install static arm64 build.
         script = f"""#!/bin/bash
 set -eo pipefail
-dnf install -y awscli python3 || dnf install -y aws-cli python3 || true
+dnf install -y awscli python3 python3-pip || dnf install -y aws-cli python3 python3-pip || true
+python3 -m pip install --upgrade pip || true
+python3 -m pip install 'boto3>=1.34' || true
 mkdir -p /etc/mediamtx /var/lib/streamclip/segments /var/run/streamclip /usr/local/bin /etc/streamclip
 if ! command -v ffmpeg >/dev/null 2>&1; then
   FFDIR=$(mktemp -d)
@@ -120,14 +142,20 @@ HOOK={hook_q}
 EVENT_URL={event_q}
 S3_BUCKET={bucket_q}
 AWS_REGION={region_q}
+ASR_PROVIDER={asr_provider_q}
+ASR_API_KEY={asr_key_q}
+ASR_BASE_URL={asr_base_q}
+ASR_MODEL={asr_model_q}
+BEDROCK_REGION={bedrock_region_q}
+BEDROCK_MODEL={bedrock_model_q}
 ENV
+chmod 600 /etc/streamclip/agent.env
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
   | tar -xz -C /usr/local/bin mediamtx
 chmod +x /usr/local/bin/mediamtx
 
-# Exact 5-min HD windows from local RTMP (stream copy). Wall-clock paced:
-# a failed window still waits out the 5 minutes before the next attempt.
+# Continuous 5-min windows: record → S3 → :8080/analyze → immediately next window.
 cat > /usr/local/bin/streamclip-segment-loop <<'AGENT'
 #!/bin/bash
 set -uo pipefail
@@ -167,7 +195,8 @@ while true; do
   [ -n "$LIVE_ID" ] || LIVE_ID="$SAFE"
   PART="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").partial.mp4"
   OUT="/var/lib/streamclip/segments/${{SAFE}}_$(printf %04d "$SEQ").mp4"
-  rm -f "$PART" "$OUT"
+  ANALYZE="/var/lib/streamclip/segments/analyze_${{SAFE}}_$(printf %04d "$SEQ").mp4"
+  rm -f "$PART" "$OUT" "$ANALYZE"
   # Local RTMP copy into fragmented MP4 (avoids moov stalls / sparse frames).
   # No wallclock remapping — keeps source timestamps and full bitrate.
   if ffmpeg -hide_banner -y \\
@@ -200,20 +229,27 @@ while true; do
     if [ -n "${{S3_BUCKET:-}}" ]; then
       aws s3 cp "$OUT" "s3://${{S3_BUCKET}}/${{KEY}}" --region "${{AWS_REGION:-eu-north-1}}" || true
     fi
+    # Ack upload on API (no Vercel analysis). Analysis runs on :8080 below.
     curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \\
       -H "X-Streamclip-Ingest-Secret: $HOOK" \\
       -d "{{\\"event\\":\\"segment\\",\\"path\\":\\"${{PATH_NAME}}\\",\\"protocol\\":\\"rtmp\\",\\"storage_key\\":\\"${{KEY}}\\",\\"sequence\\":${{SEQ}},\\"size_bytes\\":${{SIZE}},\\"processed_ms\\":300000}}" \\
       "$EVENT_URL" || true
+    mv -f "$OUT" "$ANALYZE"
+    # Hand local file to :8080 — frames / ASR / Luna on this EC2, then DB via API.
+    curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \\
+      -d "{{\\"video_path\\":\\"${{ANALYZE}}\\",\\"stream_session_id\\":\\"${{LIVE_ID}}\\",\\"sequence\\":${{SEQ}},\\"storage_key\\":\\"${{KEY}}\\",\\"size_bytes\\":${{SIZE}}}}" \\
+      "http://127.0.0.1:8080/analyze" || \\
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) analyze_queue_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
     SEQ=$((SEQ + 1))
     echo "$SEQ" > "$SEQFILE" || true
     flock -u 200
     exec 200>&-
-    rm -f "$OUT" "$PART"
-    # Success already consumed ~WINDOW_S via ffmpeg -t; loop starts the next window.
+    rm -f "$PART"
+    # $ANALYZE is deleted by the :8080 agent after Luna finishes.
   else
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
-    rm -f "$OUT" "$PART"
+    rm -f "$OUT" "$PART" "$ANALYZE"
     # Failure: start the next full 5-min capture immediately (do not sleep out the rest).
     continue
   fi
@@ -223,6 +259,8 @@ chmod +x /usr/local/bin/streamclip-segment-loop
 
 echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
 chmod +x /usr/local/bin/streamclip-analysis-agent.py
+echo '{onbox_b64}' | base64 -d > /usr/local/bin/streamclip_onbox_analyze.py
+chmod +x /usr/local/bin/streamclip_onbox_analyze.py
 
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash

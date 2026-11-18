@@ -93,6 +93,68 @@ async def test_relay_target_starts_unique_dedicated_spot(
     assert other_host != host
 
 
+async def test_relay_relaunches_spot_after_idle_terminate(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """New RTMP after idle shutdown reuses dedicated-{org} row and launches again."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.models.enums import IngestNodeStatus
+    from app.models.media import IngestNode
+    from app.services import ingest_nodes
+
+    account = await register(client, email="ingest-relaunch@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id = issued["public_id"]
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    first = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": f"live/{public_id}/sc_live_a"},
+        headers=hook,
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "ready"
+    first_host = first.json()["rtmp_push_url"]
+
+    async with ctx.db.system_tx() as session:
+        node = (
+            await session.execute(
+                select(IngestNode).where(IngestNode.name == f"dedicated-{account.organization_id}")
+            )
+        ).scalar_one()
+        node_id = node.id
+        # Simulate idle terminate (unique name row must be reusable).
+        node.status = IngestNodeStatus.TERMINATED
+        node.terminated_at = datetime.now(UTC) - timedelta(minutes=1)
+        node.public_hostname = None
+        details = dict(node.details or {})
+        details.pop("terminate_after", None)
+        node.details = details
+        await session.flush()
+
+    # Active lookup must not see the terminated row.
+    async with ctx.db.system_tx() as session:
+        assert await ingest_nodes.get_dedicated_node(session, account.organization_id) is None
+
+    second = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": f"live/{public_id}/sc_live_b"},
+        headers=hook,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "ready"
+    assert second.json()["rtmp_push_url"] == first_host  # same fake org host
+
+    async with ctx.db.system_tx() as session:
+        node = await session.get(IngestNode, node_id)
+        assert node is not None
+        assert node.status is IngestNodeStatus.READY
+        assert node.public_hostname is not None
+
+
 async def test_auth_rejects_exhausted_quota(
     client: httpx.AsyncClient, ctx: AppContext
 ) -> None:

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Dedicated EC2 analysis agent on :8080.
 
-Public GET /health and /status (JSON or HTML). POST /start|/stop localhost-only.
+Public GET /health and /status (JSON or HTML). POST /start|/stop|/analyze localhost-only.
 GET /hls/… proxies local MediaMTX HLS (127.0.0.1:8888) for dashboard preview —
 gated by the ingest hook secret or a short-lived API preview token (no OBS secret).
-Never exposes stream secrets or full remote control to the internet.
+
+Pipeline: MediaMTX RTMP → 5-min ffmpeg segment → S3 → POST /analyze here →
+frames (1/5s) + ASR + Bedrock Luna → API persist hook → highlights DB.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import importlib.util
 import json
 import os
 import re
@@ -25,6 +28,7 @@ import urllib.request
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("STREAMCLIP_AGENT_PORT", "8080"))
@@ -32,10 +36,11 @@ HLS_UPSTREAM = os.environ.get("STREAMCLIP_HLS_UPSTREAM", "http://127.0.0.1:8888"
 STATE_DIR = Path(os.environ.get("STREAMCLIP_STATE_DIR", "/var/run/streamclip"))
 SEGMENTS_DIR = Path(os.environ.get("STREAMCLIP_SEGMENTS_DIR", "/var/lib/streamclip/segments"))
 LOG = Path(os.environ.get("STREAMCLIP_AGENT_LOG", "/var/log/streamclip-agent.log"))
-MAX_BODY = 4096
+MAX_BODY = 8192
 RATE_LIMIT_PER_MIN = 120
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,198}$")
 _SAFE_HLS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./-]{0,240}$")
+_SAFE_FILE = re.compile(r"^/var/lib/streamclip/segments/[A-Za-z0-9_./-]{1,220}\.mp4$")
 
 _lock = threading.Lock()
 # Supervised 5-min RTMP segment loops (exact wall-clock cadence).
@@ -44,6 +49,13 @@ _started_at = time.time()
 _rate: dict[str, deque[float]] = defaultdict(deque)
 _net_prev: tuple[float, int, int] | None = None  # ts, rx, tx
 _net_bps: tuple[float, float] = (0.0, 0.0)
+# Background Luna analysis jobs (one worker thread pool via threading).
+_analyze_q: deque[dict[str, Any]] = deque()
+_analyze_inflight = 0
+_analyze_done = 0
+_analyze_failed = 0
+_analyze_lock = threading.Lock()
+_analyze_workers_started = False
 
 
 def _log(msg: str) -> None:
@@ -362,6 +374,113 @@ def _respawn_dead_loops() -> int:
     return restarted
 
 
+def _load_onbox_analyze():
+    """Load streamclip_onbox_analyze from /usr/local/bin or next to this file."""
+    candidates = [
+        Path("/usr/local/bin/streamclip_onbox_analyze.py"),
+        Path(__file__).with_name("ingest_onbox_analyze.py"),
+        Path(__file__).with_name("streamclip_onbox_analyze.py"),
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("streamclip_onbox_analyze", path)
+        if spec is None or spec.loader is None:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    raise RuntimeError("streamclip_onbox_analyze.py not found")
+
+
+def _ensure_analyze_workers(n: int = 1) -> None:
+    global _analyze_workers_started
+    with _analyze_lock:
+        if _analyze_workers_started:
+            return
+        _analyze_workers_started = True
+    for i in range(n):
+        t = threading.Thread(target=_analyze_worker, name=f"analyze-{i}", daemon=True)
+        t.start()
+
+
+def _analyze_worker() -> None:
+    global _analyze_inflight, _analyze_done, _analyze_failed
+    while True:
+        job: dict[str, Any] | None = None
+        with _analyze_lock:
+            if _analyze_q:
+                job = _analyze_q.popleft()
+                _analyze_inflight += 1
+        if job is None:
+            time.sleep(0.5)
+            continue
+        video = Path(str(job.get("video_path") or ""))
+        try:
+            mod = _load_onbox_analyze()
+            mod.analyze_segment_file(
+                video_path=video,
+                stream_session_id=str(job["stream_session_id"]),
+                sequence=int(job["sequence"]),
+                storage_key=str(job["storage_key"]),
+                size_bytes=int(job.get("size_bytes") or 0),
+            )
+            with _analyze_lock:
+                _analyze_done += 1
+        except Exception as exc:  # noqa: BLE001
+            _log(f"analyze_job_fail seq={job.get('sequence')} err={exc}")
+            with _analyze_lock:
+                _analyze_failed += 1
+        finally:
+            with _analyze_lock:
+                _analyze_inflight = max(0, _analyze_inflight - 1)
+            try:
+                video.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def queue_analyze(
+    *,
+    video_path: str,
+    stream_session_id: str,
+    sequence: int,
+    storage_key: str,
+    size_bytes: int = 0,
+) -> dict:
+    """Queue local FFmpeg + ASR + Luna for a segment already on disk / S3."""
+    path = (video_path or "").strip()
+    if not _SAFE_FILE.match(path):
+        return {"ok": False, "error": "invalid_video_path"}
+    if not Path(path).is_file():
+        return {"ok": False, "error": "video_missing"}
+    if not stream_session_id or sequence < 0 or not storage_key:
+        return {"ok": False, "error": "missing_fields"}
+    _ensure_analyze_workers()
+    job = {
+        "video_path": path,
+        "stream_session_id": str(stream_session_id).strip(),
+        "sequence": int(sequence),
+        "storage_key": str(storage_key).strip(),
+        "size_bytes": int(size_bytes or 0),
+    }
+    with _analyze_lock:
+        # Drop duplicate sequence still waiting.
+        sid = job["stream_session_id"]
+        seq = job["sequence"]
+        kept = [
+            j
+            for j in _analyze_q
+            if not (j.get("stream_session_id") == sid and j.get("sequence") == seq)
+        ]
+        _analyze_q.clear()
+        _analyze_q.extend(kept)
+        _analyze_q.append(job)
+        pending = len(_analyze_q)
+    _log(f"analyze_queued seq={seq} pending={pending} file={Path(path).name}")
+    return {"ok": True, "status": "queued", "sequence": seq, "pending": pending}
+
+
 def stop_path(path: str) -> dict:
     clean = _sanitize_path(path)
     if clean is None:
@@ -393,6 +512,21 @@ def stop_path(path: str) -> dict:
     return {"ok": True, "path": _public_path_label(clean), "killed": killed}
 
 
+def _analyze_stats() -> dict:
+    with _analyze_lock:
+        return {
+            "pending": len(_analyze_q),
+            "inflight": _analyze_inflight,
+            "done": _analyze_done,
+            "failed": _analyze_failed,
+            "asr_configured": bool(
+                (os.environ.get("ASR_PROVIDER") or "").strip().lower() not in ("", "none")
+                and (os.environ.get("ASR_API_KEY") or "").strip()
+            ),
+            "bedrock_model": (os.environ.get("BEDROCK_MODEL") or "us.openai.gpt-6-luna"),
+        }
+
+
 def health() -> dict:
     restarted = _respawn_dead_loops()
     with _lock:
@@ -408,6 +542,7 @@ def health() -> dict:
         "recorder": "ffmpeg-rtmp",
         "storage_configured": bool(os.environ.get("S3_BUCKET")),
         "ffmpeg": bool(shutil.which("ffmpeg") or Path("/usr/local/bin/ffmpeg").is_file()),
+        "analyze": _analyze_stats(),
     }
 
 
@@ -428,6 +563,7 @@ def status() -> dict:
         "disk_segments": _read_disk(SEGMENTS_DIR if SEGMENTS_DIR.exists() else Path("/var/lib")),
         "bandwidth": _read_net(),
         "buffer": buf,
+        "analyze": _analyze_stats(),
     }
 
 
@@ -745,6 +881,18 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/stop":
             self._json(200, stop_path(str(path)))
             return
+        if route == "/analyze":
+            self._json(
+                200,
+                queue_analyze(
+                    video_path=str(body.get("video_path") or ""),
+                    stream_session_id=str(body.get("stream_session_id") or ""),
+                    sequence=int(body.get("sequence") or 0),
+                    storage_key=str(body.get("storage_key") or ""),
+                    size_bytes=int(body.get("size_bytes") or 0),
+                ),
+            )
+            return
         self._json(404, {"ok": False, "error": "not_found"})
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -758,6 +906,7 @@ def main() -> None:
     _load_env()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_analyze_workers()
     recovered = recover_loops()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     _log(f"listening on :{PORT} recovered_loops={recovered}")

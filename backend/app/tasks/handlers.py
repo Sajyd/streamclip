@@ -151,14 +151,22 @@ async def publish_social_clip(ctx: AppContext, task: ClaimedTask) -> None:
 
 @task_handler("ingest.ensure_node")
 async def ensure_dedicated_ingest_node(ctx: AppContext, task: ClaimedTask) -> None:
-    """Launch (or reuse) the org's dedicated compute spot for live analysis."""
+    """Launch (or relaunch) the org's dedicated spot when plan + hours allow.
+
+    Gated inside ensure_dedicated_node (active subscription + remaining quota).
+    """
+    from app.core.errors import PermissionDeniedError
     from app.services import ingest_nodes
 
     organization_id = _uuid(task, "organization_id")
     async with ctx.db.system_tx() as session:
-        await ingest_nodes.ensure_dedicated_node(
-            session, ctx.settings, organization_id=organization_id, start=True
-        )
+        try:
+            await ingest_nodes.ensure_dedicated_node(
+                session, ctx.settings, organization_id=organization_id, start=True
+            )
+        except PermissionDeniedError as exc:
+            # No plan / exhausted hours — drop the task permanently.
+            raise PermanentTaskError(str(getattr(exc, "code", None) or exc)) from exc
 
 
 @task_handler("ingest.finalize_interrupted")
@@ -185,63 +193,18 @@ async def finalize_interrupted_live(ctx: AppContext, task: ClaimedTask) -> None:
 
 
 @task_handler("analysis.segment")
-async def analyze_live_segment(ctx: AppContext, task: ClaimedTask) -> None:
-    """FFmpeg + ASR + Luna for one 5-min HD segment uploaded by the ingest agent.
+async def analyze_live_segment(_ctx: AppContext, task: ClaimedTask) -> None:
+    """Deprecated: live analysis runs on the per-user EC2 :8080 agent only.
 
-    Quota: −5 minutes only after a successful analysis (not on upload / ticks).
-    Failures retry/dead the task only — they must never close or interrupt the live.
-    The ingest agent advances to the next segment independently of this outcome.
+    Stale queue rows (from the old Vercel FFmpeg path) are dropped permanently.
+    New segments are analyzed on-box and persisted via /ingest/hooks/segment-analysis.
     """
-    from app.models.media import StreamSession
-    from app.services import ingest as ingest_service
-    from app.services.media_ffmpeg import FFmpegError
-    from app.services.segment_pipeline import WINDOW_MS, analyze_uploaded_segment
-
-    session_id = _uuid(task, "stream_session_id")
-    sequence = int(task.payload.get("sequence", 0))
-    storage_key = str(task.payload.get("storage_key") or "")
-    size_bytes = int(task.payload.get("size_bytes") or 0)
-    if not storage_key:
-        raise PermanentTaskError("storage_key required")
-    if ctx.storage is None:
-        raise PermanentTaskError("Object storage unavailable")
-
-    async with ctx.db.system_tx() as session:
-        stream = await session.get(StreamSession, session_id)
-        if stream is None:
-            raise PermanentTaskError("stream session missing")
-        # A soft publisher flap must not block billing for an uploaded segment.
-        await ingest_service.resume_session(session, stream)
-        try:
-            await analyze_uploaded_segment(
-                session,
-                settings=ctx.settings,
-                storage=ctx.storage,
-                stream=stream,
-                sequence=sequence,
-                storage_key=storage_key,
-                size_bytes=size_bytes,
-            )
-        except FFmpegError as exc:
-            # Leave the live open; queue retries / parks the task. Next segments proceed.
-            log.warning(
-                "analysis_segment_ffmpeg_failed",
-                stream_id=str(stream.id),
-                sequence=sequence,
-                error=str(exc),
-            )
-            raise
-        # Charge exactly one 5-min window once analysis persisted.
-        already = stream.processed_ms or 0
-        target = (sequence + 1) * WINDOW_MS
-        unbilled = max(0, target - already)
-        if unbilled > 0:
-            await ingest_service.record_processed_tick(
-                session,
-                stream,
-                processed_ms=unbilled,
-                media_end_ms=target,
-            )
+    log.info(
+        "analysis_segment_skipped_onbox_only",
+        stream_session_id=task.payload.get("stream_session_id"),
+        sequence=task.payload.get("sequence"),
+    )
+    raise PermanentTaskError("onbox_only: analysis runs on dedicated EC2 :8080")
 
 
 @task_handler("analysis.transcribe")

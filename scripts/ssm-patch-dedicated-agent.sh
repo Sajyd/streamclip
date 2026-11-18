@@ -1,20 +1,21 @@
 #!/bin/bash
-# Hot-patch dedicated ingest EC2:
-# - Exact 5-min RTMP segment loop (wall-clock paced, rejects tiny flaps)
-# - Disable MediaMTX native record (was closing early + racing sequences)
-# - Refresh :8080 agent
+# Hot-patch dedicated per-org ingest EC2:
+# - 5-min RTMP segment loop → S3 → :8080/analyze (on-box frames/ASR/Luna)
+# - Refresh :8080 agent + onbox analyzer
+# - Disable MediaMTX native record
 # Usage: INSTANCE_ID=i-xxx REGION=eu-north-1 ./scripts/ssm-patch-dedicated-agent.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTANCE_ID="${INSTANCE_ID:?set INSTANCE_ID}"
 REGION="${REGION:-eu-north-1}"
 AGENT_B64="$(base64 < "$ROOT/backend/app/services/ingest_agent.py" | tr -d '\n')"
+ONBOX_B64="$(base64 < "$ROOT/backend/app/services/ingest_onbox_analyze.py" | tr -d '\n')"
 
 PARAMS=$(mktemp)
 trap 'rm -f "$PARAMS"' EXIT
-python3 - "$AGENT_B64" <<'PY' > "$PARAMS"
+python3 - "$AGENT_B64" "$ONBOX_B64" <<'PY' > "$PARAMS"
 import json, sys
-agent_b64 = sys.argv[1]
+agent_b64, onbox_b64 = sys.argv[1], sys.argv[2]
 script = r"""
 set -euo pipefail
 mkdir -p /etc/streamclip /var/run/streamclip /var/lib/streamclip/segments /usr/local/bin
@@ -29,8 +30,12 @@ if [ ! -f /etc/streamclip/agent.env ]; then
 fi
 . /etc/streamclip/agent.env || true
 
+python3 -m pip install --upgrade 'boto3>=1.34' >/tmp/streamclip-pip.log 2>&1 || true
+
 echo '__AGENT_B64__' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
 chmod +x /usr/local/bin/streamclip-analysis-agent.py
+echo '__ONBOX_B64__' | base64 -d > /usr/local/bin/streamclip_onbox_analyze.py
+chmod +x /usr/local/bin/streamclip_onbox_analyze.py
 
 # Stop old recorders (MediaMTX record hooks + any prior loops).
 pkill -f streamclip-segment-loop || true
@@ -54,7 +59,6 @@ SESSIONFILE="/var/run/streamclip/seg_${SAFE}.session"
 LOG="/var/log/streamclip-segment.log"
 WINDOW_S=300
 MIN_BYTES=1000000
-# Only treat an existing PID as ours if it is this segment-loop for this path.
 if [ -f "$PIDFILE" ]; then
   OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
   if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
@@ -78,7 +82,8 @@ while true; do
   [ -n "$LIVE_ID" ] || LIVE_ID="$SAFE"
   PART="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").partial.mp4"
   OUT="/var/lib/streamclip/segments/${SAFE}_$(printf %04d "$SEQ").mp4"
-  rm -f "$PART" "$OUT"
+  ANALYZE="/var/lib/streamclip/segments/analyze_${SAFE}_$(printf %04d "$SEQ").mp4"
+  rm -f "$PART" "$OUT" "$ANALYZE"
   if ffmpeg -hide_banner -y \
       -rw_timeout 15000000 \
       -fflags +genpts+igndts \
@@ -113,16 +118,20 @@ while true; do
       -H "X-Streamclip-Ingest-Secret: $HOOK" \
       -d "{\"event\":\"segment\",\"path\":\"${PATH_NAME}\",\"protocol\":\"rtmp\",\"storage_key\":\"${KEY}\",\"sequence\":${SEQ},\"size_bytes\":${SIZE},\"processed_ms\":300000}" \
       "$EVENT_URL" || true
+    mv -f "$OUT" "$ANALYZE"
+    curl -fsS --max-time 10 -X POST -H "Content-Type: application/json" \
+      -d "{\"video_path\":\"${ANALYZE}\",\"stream_session_id\":\"${LIVE_ID}\",\"sequence\":${SEQ},\"storage_key\":\"${KEY}\",\"size_bytes\":${SIZE}}" \
+      "http://127.0.0.1:8080/analyze" || \
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) analyze_queue_fail path=$PATH_NAME seq=$SEQ" >>"$LOG" || true
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_ok path=$PATH_NAME seq=$SEQ size=$SIZE key=$KEY" >>"$LOG" || true
     SEQ=$((SEQ + 1))
     echo "$SEQ" > "$SEQFILE" || true
     flock -u 200
     exec 200>&-
-    rm -f "$OUT" "$PART"
+    rm -f "$PART"
   else
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) record_reject_tiny path=$PATH_NAME seq=$SEQ size=$SIZE" >>"$LOG" || true
-    rm -f "$OUT" "$PART"
-    # Failure: start the next full 5-min capture immediately.
+    rm -f "$OUT" "$PART" "$ANALYZE"
     continue
   fi
 done
@@ -221,8 +230,13 @@ ss -lntp | grep -E '1935|8080' || true
 ffmpeg -version | head -1 || true
 grep -E 'record:|writeQueueSize|runOnReady' /etc/mediamtx/mediamtx.yml || true
 test -x /usr/local/bin/streamclip-segment-loop && echo segment_loop_ok
+test -f /usr/local/bin/streamclip_onbox_analyze.py && echo onbox_ok
 """
-print(json.dumps({"commands": [script.replace("__AGENT_B64__", agent_b64)]}))
+print(json.dumps({
+    "commands": [
+        script.replace("__AGENT_B64__", agent_b64).replace("__ONBOX_B64__", onbox_b64)
+    ]
+}))
 PY
 
 aws ssm send-command \
