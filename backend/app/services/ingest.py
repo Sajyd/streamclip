@@ -430,8 +430,11 @@ async def record_processed_tick(
     media_end_ms: int | None = None,
 ) -> entitlements.QuotaSnapshot:
     """Charge analyzed media time (−5 min per segment) and stop if quota exhausted."""
-    if processed_ms <= 0:
-        return (await entitlements.get_entitlement(session, stream.organization_id)).quota
+    entitlement = await entitlements.get_entitlement(session, stream.organization_id)
+    if processed_ms <= 0 or entitlement.quota.exhausted:
+        if entitlement.quota.exhausted and stream.status in OPEN_SESSION_STATUSES:
+            await close_session(session, stream, reason=StreamEndReason.QUOTA_EXHAUSTED)
+        return entitlement.quota
     previous = stream.processed_ms
     stream.processed_ms = previous + processed_ms
     if media_end_ms is not None:

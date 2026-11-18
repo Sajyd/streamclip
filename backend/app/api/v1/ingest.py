@@ -573,9 +573,12 @@ def _caller_ip(request: Request) -> str | None:
 
 
 async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx) -> Response:
-    """Spot MediaMTX auth: the publisher must hit that live's own IP.
+    """MediaMTX auth for a publish.
 
-    The shared edge is not an ingest target. OBS uses rtmp://<spot-ip>:1935/live.
+    OBS connects to the shared edge. That edge is not a dedicated spot, so a
+    missing node is allowed. A node is required to belong to this account when
+    the publisher is the spot itself. The edge only relays after EC2 confirms
+    that spot is running.
     """
     _require_hook_secret(request, ctx)
     if body.action not in ("publish", "publishs"):
@@ -609,11 +612,6 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
         node = await ingest_nodes.find_node_by_hostname(session, caller)
         if node is None and ctx.settings.environment in ("test", "local"):
             node = await ingest_nodes.get_dedicated_node(session, key.organization_id)
-        if node is None and ctx.settings.environment not in ("test", "local"):
-            raise PermissionDeniedError(
-                "Connectez OBS à l'adresse IP de ce live, pas au serveur partagé.",
-                code="direct_ingest_required",
-            )
         if node is not None:
             prefix = f"dedicated-{key.organization_id}"
             if node.name != prefix and not node.name.startswith(f"{prefix}-"):

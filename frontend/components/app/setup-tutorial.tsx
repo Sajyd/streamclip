@@ -105,7 +105,7 @@ export function SetupTutorial({
           <StreamKeyManager
             canManage={canManage}
             ingestOnline={ingestOnline}
-            rtmpUrl={rtmpUrl}
+            rtmpUrl={_rtmpUrl}
             existingKey={existingKey}
             timeZone={timeZone}
             onIssued={onIssued}
