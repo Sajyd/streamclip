@@ -527,17 +527,8 @@ async def mediamtx_auth(body: IngestAuthHookRequest, request: Request, ctx: Ctx)
                 "node_host": node.public_hostname if node else None,
             },
         )
-    # All plans: start the spot before the edge asks for a relay target.
-    from app.tasks.queue import run_due_tasks
-
-    await run_due_tasks(
-        ctx,
-        worker=f"auth-{getattr(request.state, 'request_id', 'hook')}",
-        queues=["ingest"],
-        kinds=["ingest.ensure_node"],
-        max_tasks=1,
-        time_budget_seconds=45.0,
-    )
+    # Return immediately — MediaMTX auth must stay fast or OBS flaps / times out.
+    # Spot boot continues via ingest.ensure_node + relay-target polling / drain cron.
     return Response(status_code=200)
 
 

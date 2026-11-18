@@ -3,7 +3,6 @@ import { Suspense } from "react";
 
 import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
-import { getLivePlaybackAction } from "@/app/actions/live";
 import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
 import { ClipsLibrary } from "@/components/app/clips-library";
 import { LiveDetector } from "@/components/app/live-detector";
@@ -179,7 +178,6 @@ async function Dashboard() {
           <LiveMonitor
             initialPlayback={playback}
             hlsBase="/live/stream"
-            refreshPlayback={getLivePlaybackAction}
             playerOnly
           />
         ) : (

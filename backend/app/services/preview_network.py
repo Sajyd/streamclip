@@ -245,7 +245,11 @@ def _ssm_run(settings: Settings, *, instance_id: str, commands: list[str]) -> di
 
 
 def enable_edge_hls_proxy(settings: Settings, *, instance_id: str) -> dict[str, Any]:
-    """SSM: turn on MediaMTX HLS + systemd proxy on :8080 for the edge node."""
+    """SSM: turn on MediaMTX HLS + systemd proxy on :8080 for the edge node.
+
+    Never restart MediaMTX unless the HLS block actually changed — a restart
+    drops every OBS publisher on the shared edge and aborts 5-min segments.
+    """
     proxy_b64 = base64.b64encode(_EDGE_HLS_PROXY.encode()).decode("ascii")
     hook = ""
     if settings.ingest_hook_secret is not None:
@@ -256,6 +260,7 @@ mkdir -p /usr/local/bin /etc/streamclip
 echo '{proxy_b64}' | base64 -d > /usr/local/bin/streamclip-edge-hls.py
 chmod +x /usr/local/bin/streamclip-edge-hls.py
 printf 'HOOK=%s\\n' '{hook}' > /etc/streamclip/edge-hls.env
+MTX_RESTART=0
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
   python3 - <<'PY'
 from pathlib import Path
@@ -297,10 +302,21 @@ if not any(l.startswith("hls:") for l in out):
             inserted = True
         final.append(l)
     out = final
-p.write_text("\\n".join(out) + "\\n")
-print("mediamtx_hls_ok")
+new = "\\n".join(out) + "\\n"
+if new != text:
+    p.write_text(new)
+    Path("/tmp/streamclip-mtx-hls-changed").write_text("1")
+    print("mediamtx_hls_changed")
+else:
+    print("mediamtx_hls_unchanged")
 PY
-  systemctl restart mediamtx || true
+  if [ -f /tmp/streamclip-mtx-hls-changed ]; then
+    rm -f /tmp/streamclip-mtx-hls-changed
+    MTX_RESTART=1
+  fi
+  if [ "$MTX_RESTART" = "1" ]; then
+    systemctl restart mediamtx || true
+  fi
 fi
 cat > /etc/systemd/system/streamclip-edge-hls.service <<'UNIT'
 [Unit]
@@ -318,6 +334,7 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now streamclip-edge-hls
+# Restart only the HLS proxy (safe) — never bounce MediaMTX unless config changed.
 systemctl restart streamclip-edge-hls
 sleep 1
 curl -fsS http://127.0.0.1:8080/health || true
@@ -333,7 +350,11 @@ ss -lntp | grep -E '8080|8888|1935' || true
 def patch_dedicated_preview(
     settings: Settings, *, instance_id: str
 ) -> dict[str, Any]:
-    """SSM: refresh dedicated agent + ensure MediaMTX local HLS."""
+    """SSM: refresh dedicated agent + ensure MediaMTX local HLS.
+
+    Skip MediaMTX rewrite/restart when HLS is already enabled — bouncing it
+    kills the local RTMP publisher (edge relay) and the segment loop.
+    """
     agent_path = Path(__file__).with_name("ingest_agent.py")
     agent_b64 = base64.b64encode(agent_path.read_bytes()).decode("ascii")
     script = f"""
@@ -342,13 +363,19 @@ mkdir -p /usr/local/bin /etc/streamclip
 echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
 chmod +x /usr/local/bin/streamclip-analysis-agent.py
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
-  AUTH_LINE=$(grep -E '^authHTTPAddress:' /etc/mediamtx/mediamtx.yml | head -1 || true)
-  [ -n "${{AUTH_LINE:-}}" ] || AUTH_LINE='authHTTPAddress: http://127.0.0.1/'
-  python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\\nwriteQueueSize: 8192\\nreadTimeout: 60s\\nwriteTimeout: 60s\\nrtmp: yes\\nrtmpAddress: :1935\\nsrt: yes\\nsrtAddress: :8890\\nwebrtc: no\\nhls: yes\\nhlsAddress: 127.0.0.1:8888\\nhlsAlwaysRemux: yes\\nhlsSegmentCount: 7\\nhlsSegmentDuration: 1s\\nrtsp: yes\\nrtspAddress: :8554\\nauthMethod: http\\n"+auth+"\\npathDefaults:\\n  record: no\\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\\npaths:\\n  all_others:\\n")' "$AUTH_LINE"
-  systemctl restart mediamtx || true
+  if grep -qE '^hls:[[:space:]]*yes' /etc/mediamtx/mediamtx.yml \\
+    && grep -qE '^hlsAddress:[[:space:]]*127\\.0\\.0\\.1:8888' /etc/mediamtx/mediamtx.yml; then
+    echo "dedicated_hls_already_ok"
+  else
+    AUTH_LINE=$(grep -E '^authHTTPAddress:' /etc/mediamtx/mediamtx.yml | head -1 || true)
+    [ -n "${{AUTH_LINE:-}}" ] || AUTH_LINE='authHTTPAddress: http://127.0.0.1/'
+    python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\\nwriteQueueSize: 8192\\nreadTimeout: 60s\\nwriteTimeout: 60s\\nrtmp: yes\\nrtmpAddress: :1935\\nsrt: yes\\nsrtAddress: :8890\\nwebrtc: no\\nhls: yes\\nhlsAddress: 127.0.0.1:8888\\nhlsAlwaysRemux: yes\\nhlsSegmentCount: 7\\nhlsSegmentDuration: 1s\\nrtsp: yes\\nrtspAddress: :8554\\nauthMethod: http\\n"+auth+"\\npathDefaults:\\n  record: no\\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\\npaths:\\n  all_others:\\n")' "$AUTH_LINE"
+    systemctl restart mediamtx || true
+  fi
 fi
 systemctl daemon-reload || true
 systemctl enable --now streamclip-agent || true
+# Agent restart is OK (HLS proxy only); MediaMTX stays up when already configured.
 systemctl restart streamclip-agent || true
 sleep 1
 curl -fsS http://127.0.0.1:8080/health || true

@@ -250,9 +250,9 @@ def info_to_dict(info: PlaybackInfo, settings: Settings) -> dict[str, Any]:
         if info.public_id and info.preview_available
         else None
     )
-    # Kick SG/SSM heal early so the first HLS fetch can succeed after a few seconds.
-    if info.preview_available:
-        schedule_repair(settings, dedicated_instance_id=None)
+    # Do NOT schedule_repair here. Playback status is polled every few seconds from
+    # the dashboard; repair rewrites MediaMTX and restarts it, which drops OBS and
+    # aborts the 5-min segment window. Heal only from proxy_hls failures.
     return {
         "status": info.status,
         "session_id": info.session_id,

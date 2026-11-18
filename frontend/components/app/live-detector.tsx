@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { getIngestSessionsAction } from "@/app/actions/live";
 import { saveOnboardingAction } from "@/app/actions/onboarding";
 import { Badge } from "@/components/ui/primitives";
+import { fetchIngestSessions } from "@/lib/live-poll";
 import type { StreamSession } from "@/types/api";
 
 const LIVE_STATUSES = new Set(["pending", "live"]);
@@ -32,9 +32,11 @@ export function LiveDetector({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const tick = async () => {
+      if (document.visibilityState === "hidden") return;
       try {
-        const next = await getIngestSessionsAction();
+        const next = await fetchIngestSessions(controller.signal);
         if (!cancelled) setSessions(next);
       } catch {
         // Keep last known state on transient failures.
@@ -42,9 +44,15 @@ export function LiveDetector({
     };
     void tick();
     const timer = window.setInterval(() => void tick(), pollMs);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [pollMs]);
 

@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import {
-  getLiveHighlightsAction,
-  getLivePlaybackAction,
-} from "@/app/actions/live";
 import { LiveMonitor } from "@/components/app/live-monitor";
 import { ButtonLink } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/primitives";
@@ -36,8 +32,7 @@ async function LiveContent() {
       initialPlayback={playback}
       initialHighlights={scoped}
       hlsBase="/live/stream"
-      refreshPlayback={getLivePlaybackAction}
-      refreshHighlights={getLiveHighlightsAction}
+      pollHighlights
       timeZone={me.user.timezone}
     />
   );

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { LivePlayer } from "@/components/app/live-player";
 import { Badge, Card, CardDescription, CardTitle } from "@/components/ui/primitives";
 import { cx, formatDateTime } from "@/lib/format";
+import { fetchLiveHighlights, fetchLivePlayback } from "@/lib/live-poll";
 import type { Highlight, LivePlayback } from "@/types/api";
 
 type Toast = { id: string; title: string; score: number };
@@ -14,8 +15,8 @@ type Props = {
   initialPlayback: LivePlayback;
   initialHighlights?: Highlight[];
   hlsBase: string;
-  refreshPlayback: () => Promise<LivePlayback>;
-  refreshHighlights?: (sessionId: string | null) => Promise<Highlight[]>;
+  /** When true, also poll highlights for the active session. */
+  pollHighlights?: boolean;
   timeZone?: string;
   /** Player only — for dashboard grid cards. */
   playerOnly?: boolean;
@@ -27,8 +28,7 @@ export function LiveMonitor({
   initialPlayback,
   initialHighlights = [],
   hlsBase,
-  refreshPlayback,
-  refreshHighlights,
+  pollHighlights = false,
   timeZone = "UTC",
   playerOnly = false,
   showList = true,
@@ -54,13 +54,15 @@ export function LiveMonitor({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const tick = async () => {
+      if (document.visibilityState === "hidden") return;
       try {
-        const next = await refreshPlayback();
+        const next = await fetchLivePlayback(controller.signal);
         if (cancelled) return;
         setPlayback(next);
-        if (!refreshHighlights || playerOnly) return;
-        const list = await refreshHighlights(next.session_id);
+        if (!pollHighlights || playerOnly) return;
+        const list = await fetchLiveHighlights(next.session_id, controller.signal);
         if (cancelled) return;
         setHighlights(list);
         for (const item of list) {
@@ -78,11 +80,17 @@ export function LiveMonitor({
     };
     void tick();
     const timer = window.setInterval(() => void tick(), 4000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
-  }, [refreshPlayback, refreshHighlights, playerOnly]);
+  }, [pollHighlights, playerOnly]);
 
   // Prefer media playlist; master (index) also works once rewritten by the proxy.
   const src =

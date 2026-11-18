@@ -2,10 +2,45 @@
 
 import { useEffect, useState } from "react";
 
-import { getAdminLivePlaybackAction } from "@/app/actions/live";
 import { LivePlayer } from "@/components/app/live-player";
 import { Card, CardDescription, CardTitle } from "@/components/ui/primitives";
 import type { LivePlayback } from "@/types/api";
+
+async function fetchAdminPlayback(liveId: string, signal?: AbortSignal): Promise<LivePlayback> {
+  try {
+    const res = await fetch(`/api/live/admin/${encodeURIComponent(liveId)}/playback`, {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal,
+    });
+    if (!res.ok) {
+      return {
+        status: "offline",
+        session_id: liveId,
+        public_id: null,
+        title: null,
+        rtmp_url: null,
+        preview_available: false,
+        message: res.status === 401 ? "Session expirée" : "Aperçu indisponible",
+        stream_key_hint: null,
+        preview_token: null,
+      };
+    }
+    return (await res.json()) as LivePlayback;
+  } catch {
+    return {
+      status: "offline",
+      session_id: liveId,
+      public_id: null,
+      title: null,
+      rtmp_url: null,
+      preview_available: false,
+      message: "Aperçu indisponible",
+      stream_key_hint: null,
+      preview_token: null,
+    };
+  }
+}
 
 type Props = {
   liveId: string;
@@ -38,15 +73,23 @@ export function AdminLivePlayer({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const tick = async () => {
-      const next = await getAdminLivePlaybackAction(liveId);
+      if (document.visibilityState === "hidden") return;
+      const next = await fetchAdminPlayback(liveId, controller.signal);
       if (!cancelled) setPlayback(next);
     };
     void tick();
     const timer = window.setInterval(() => void tick(), 5000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") void tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [liveId]);
 
