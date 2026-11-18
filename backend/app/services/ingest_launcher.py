@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -66,7 +67,34 @@ class AwsSpotLauncher:
             or "eu-north-1",
         )
 
-    def _user_data(self) -> str:
+    def _publish_boot_scripts(self) -> tuple[str, str]:
+        """Upload agent sources under tmp/ so user-data stays under the EC2 16KB cap.
+
+        The dedicated instance role can GetObject on tmp/*; the API role can PutObject there.
+        """
+        settings = self._settings
+        bucket = (settings.s3_bucket or "").strip()
+        if not bucket:
+            raise RuntimeError("S3 bucket is required to publish ingest boot scripts")
+        agent = Path(__file__).with_name("ingest_agent.py").read_bytes()
+        onbox = Path(__file__).with_name("ingest_onbox_analyze.py").read_bytes()
+        digest = hashlib.sha256(agent + b"\0" + onbox).hexdigest()[:16]
+        agent_key = f"tmp/boot/{digest}/streamclip-analysis-agent.py"
+        onbox_key = f"tmp/boot/{digest}/streamclip_onbox_analyze.py"
+        region = settings.s3_region or settings.ingest_ec2_region or "eu-north-1"
+        from app.aws.session import boto3_session
+
+        client = boto3_session(settings).client("s3", region_name=region)
+        for key, body in ((agent_key, agent), (onbox_key, onbox)):
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="text/x-python",
+            )
+        return agent_key, onbox_key
+
+    def _user_data(self, agent_key: str, onbox_key: str) -> str:
         """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
 
         Vercel only receives segment acks and persisted highlight JSON — never
@@ -114,10 +142,8 @@ class AwsSpotLauncher:
         bedrock_region_q = _sq(bedrock_region)
         bedrock_model_q = _sq(bedrock_model)
 
-        agent_path = Path(__file__).with_name("ingest_agent.py")
-        agent_b64 = base64.b64encode(agent_path.read_bytes()).decode("ascii")
-        onbox_path = Path(__file__).with_name("ingest_onbox_analyze.py")
-        onbox_b64 = base64.b64encode(onbox_path.read_bytes()).decode("ascii")
+        agent_key_q = _sq(agent_key)
+        onbox_key_q = _sq(onbox_key)
 
         # Native MediaMTX + :8080 analysis (5-min buffer → S3 → local Luna).
         # AL2023 has no ffmpeg package — install static arm64 build.
@@ -257,10 +283,9 @@ done
 AGENT
 chmod +x /usr/local/bin/streamclip-segment-loop
 
-echo '{agent_b64}' | base64 -d > /usr/local/bin/streamclip-analysis-agent.py
-chmod +x /usr/local/bin/streamclip-analysis-agent.py
-echo '{onbox_b64}' | base64 -d > /usr/local/bin/streamclip_onbox_analyze.py
-chmod +x /usr/local/bin/streamclip_onbox_analyze.py
+aws s3 cp "s3://{bucket_q}/{agent_key_q}" /usr/local/bin/streamclip-analysis-agent.py --region "{region_q}"
+aws s3 cp "s3://{bucket_q}/{onbox_key_q}" /usr/local/bin/streamclip_onbox_analyze.py --region "{region_q}"
+chmod +x /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
 
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
@@ -389,7 +414,15 @@ systemctl enable --now mediamtx
 
         def _run() -> LaunchResult:
             client = self._client()
-            user_data_b64 = base64.b64encode(self._user_data().encode("utf-8")).decode("ascii")
+            agent_key, onbox_key = self._publish_boot_scripts()
+            raw_user_data = self._user_data(agent_key, onbox_key).encode("utf-8")
+            user_data_b64 = base64.b64encode(raw_user_data).decode("ascii")
+            # EC2 rejects encoded user-data above 25600 bytes (16KB raw).
+            if len(user_data_b64) > 25000:
+                raise RuntimeError(
+                    f"EC2 user-data is {len(user_data_b64)} bytes encoded "
+                    "(limit 25600). Boot scripts must be fetched from S3."
+                )
             kwargs: dict = {
                 "ImageId": settings.ingest_ec2_ami_id,
                 "InstanceType": settings.ingest_ec2_instance_type or "t4g.small",
