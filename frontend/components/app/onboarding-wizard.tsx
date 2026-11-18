@@ -178,6 +178,94 @@ function StepHeader({
   );
 }
 
+function WelcomeIcon({ kind }: { kind: "key" | "plugin" | "live" }) {
+  const common = "size-7 text-brand-200";
+  if (kind === "key") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden className={common}>
+        <circle cx="8" cy="14" r="3.25" stroke="currentColor" strokeWidth="1.75" />
+        <path
+          d="M10.5 12.5 19 4.5M16.5 4.5h3v3"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (kind === "plugin") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden className={common}>
+        <rect x="3.5" y="4.5" width="17" height="12" rx="2.5" stroke="currentColor" strokeWidth="1.75" />
+        <path d="M8 20.5h8M12 16.5v4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+        <path
+          d="M8 9.5h3.5v3H8zM14 9.5h2.5M14 12.5h2.5"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={common}>
+      <circle cx="12" cy="12" r="8.25" stroke="currentColor" strokeWidth="1.75" />
+      <path d="m10 9.5 6 2.5-6 2.5V9.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+const WELCOME_STEPS = [
+  {
+    kind: "key" as const,
+    title: "Votre clé STREAMCLIP",
+    body: "On crée une clé secrète. Vous la collez une fois — elle identifie votre compte.",
+  },
+  {
+    kind: "plugin" as const,
+    title: "Branchez OBS / Streamlabs",
+    body: "Ajoutez STREAMCLIP en destination supplémentaire. Votre live principal ne bouge pas.",
+  },
+  {
+    kind: "live" as const,
+    title: "Diffusez — on s’occupe du reste",
+    body: "Dès que le live démarre, on détecte le signal et on prépare vos clips automatiquement.",
+  },
+] as const;
+
+function WelcomeRoadmap() {
+  return (
+    <ol className="relative mt-8 grid gap-3 sm:grid-cols-3 sm:gap-0">
+      {/* Connector line (desktop) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute top-10 right-[16%] left-[16%] hidden h-px bg-gradient-to-r from-brand-500/0 via-brand-400/50 to-brand-500/0 sm:block"
+      />
+      {WELCOME_STEPS.map((item, index) => (
+        <li key={item.kind} className="relative flex flex-col items-center text-center sm:px-3">
+          <div className="relative z-10 flex size-20 items-center justify-center rounded-2xl border border-brand-400/30 bg-gradient-to-b from-brand-500/25 to-ink-950 shadow-lg shadow-brand-500/10">
+            <WelcomeIcon kind={item.kind} />
+            <span className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full bg-brand-500 text-xs font-bold text-white">
+              {index + 1}
+            </span>
+          </div>
+          <p className="mt-4 text-sm font-semibold text-white">{item.title}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-ink-400">{item.body}</p>
+          {index < WELCOME_STEPS.length - 1 ? (
+            <span
+              aria-hidden
+              className="mt-3 flex items-center justify-center text-brand-400/60 sm:hidden"
+            >
+              ↓
+            </span>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function OnboardingWizard({
   initial,
   displayName,
@@ -364,22 +452,14 @@ export function OnboardingWizard({
 
       {step === "welcome" ? (
         <Card className="relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-brand-500/20 to-transparent" />
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-36 bg-gradient-to-b from-brand-500/25 via-brand-500/5 to-transparent" />
+          <div className="pointer-events-none absolute -right-16 -top-10 size-48 rounded-full bg-flare-500/10 blur-3xl" />
           <StepHeader
             eyebrow="Bienvenue"
             title={displayName ? `Salut ${displayName}` : "Salut"}
-            hint="On branche votre live étape par étape. Twitch / YouTube ne changent pas."
+            hint="En quelques minutes, STREAMCLIP reçoit une copie de votre live et prépare vos clips. Twitch / YouTube ne changent pas."
           />
-          <ul className="relative mt-6 grid gap-2 text-sm text-ink-200 sm:grid-cols-3">
-            {["1. Clé", "2. Plugin OBS", "3. Live"].map((item) => (
-              <li
-                key={item}
-                className="rounded-2xl border border-white/10 bg-ink-950/50 px-3 py-2.5 text-center font-medium"
-              >
-                {item}
-              </li>
-            ))}
-          </ul>
+          <WelcomeRoadmap />
         </Card>
       ) : null}
 
