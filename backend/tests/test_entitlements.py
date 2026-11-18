@@ -99,12 +99,25 @@ async def test_warning_at_80_percent_and_stop_at_100_percent_notify_once(
 
     done = await _use(ctx, account, 7, "d")  # 60 min = 100 %
     assert done.exhausted is True and done.remaining_ms == 0
-    await _use(ctx, account, 3, "e")  # overshoot is recorded, notified once
+    await _use(ctx, account, 3, "e")  # past the plan: not charged, notified once
     assert await _notification_kinds(ctx) == ["quota.warning", "quota.exhausted"]
 
     overview = (await client.get(f"{API}/billing/overview", headers=account.headers)).json()
     assert overview["quota"]["exhausted"] is True and overview["quota"]["remaining_seconds"] == 0
+    assert overview["quota"]["consumed_seconds"] == 60 * 60
     assert overview["quota"]["used_ratio"] == 1.0
+
+
+async def test_a_segment_that_crosses_the_plan_stops_at_the_threshold(
+    ctx: AppContext, client: httpx.AsyncClient
+) -> None:
+    account = await register(client)  # Free plan: 60 minutes
+    await _use(ctx, account, 58, "almost")
+    capped = await _use(ctx, account, 10, "crosses")
+    assert capped.consumed_ms == 60 * MINUTE_MS
+    assert capped.remaining_ms == 0 and capped.exhausted is True
+    overview = (await client.get(f"{API}/billing/overview", headers=account.headers)).json()
+    assert overview["quota"]["consumed_seconds"] == 60 * 60
 
 
 async def test_jumping_straight_to_exhaustion_sends_only_the_exhausted_notice(

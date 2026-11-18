@@ -221,6 +221,18 @@ async def record_usage(
     plan = await session.get_one(Plan, subscription.plan_id)
     # Row lock: concurrent usage events for one tenant are applied one by one.
     period = await ensure_usage_period(session, subscription, plan)
+    # A segment that crosses the plan limit only fills what is left.
+    # Nothing is stored above included_ms, including rows that already overshot.
+    if period.consumed_ms > period.included_ms:
+        period.consumed_ms = period.included_ms
+    remaining_ms = max(period.included_ms - period.consumed_ms, 0)
+    bill_ms = min(quantity_ms, remaining_ms)
+    if bill_ms <= 0:
+        now = datetime.now(UTC)
+        if period.exhausted_at is None:
+            period.exhausted_at = now
+        await session.flush()
+        return _snapshot(period)
 
     inserted = (
         await session.execute(
@@ -230,9 +242,11 @@ async def record_usage(
                 usage_period_id=period.id,
                 stream_session_id=stream_session_id,
                 kind=kind,
-                quantity_ms=quantity_ms,
+                quantity_ms=bill_ms,
                 media_start_ms=media_start_ms,
-                media_end_ms=media_end_ms,
+                media_end_ms=(
+                    media_start_ms + bill_ms if media_start_ms is not None else media_end_ms
+                ),
                 idempotency_key=idempotency_key,
             )
             .on_conflict_do_nothing(index_elements=["idempotency_key"])
@@ -242,7 +256,7 @@ async def record_usage(
     if inserted is None:
         return _snapshot(period)
 
-    period.consumed_ms = max(period.consumed_ms + quantity_ms, 0)
+    period.consumed_ms = period.consumed_ms + bill_ms
     snapshot = _snapshot(period)
     now = datetime.now(UTC)
     if snapshot.exhausted and period.exhausted_at is None:
