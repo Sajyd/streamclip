@@ -251,15 +251,32 @@ def enable_edge_hls_proxy(settings: Settings, *, instance_id: str) -> dict[str, 
     drops every OBS publisher on the shared edge and aborts 5-min segments.
     """
     proxy_b64 = base64.b64encode(_EDGE_HLS_PROXY.encode()).decode("ascii")
-    hook = ""
-    if settings.ingest_hook_secret is not None:
-        hook = settings.ingest_hook_secret.get_secret_value().replace("'", "'\\''")
+    # Never send the ingest hook through SSM — reuse the secret already on the box.
     script = f"""
 set -euo pipefail
 mkdir -p /usr/local/bin /etc/streamclip
 echo '{proxy_b64}' | base64 -d > /usr/local/bin/streamclip-edge-hls.py
 chmod +x /usr/local/bin/streamclip-edge-hls.py
-printf 'HOOK=%s\\n' '{hook}' > /etc/streamclip/edge-hls.env
+python3 - <<'PY'
+import os
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+dest = Path("/etc/streamclip/edge-hls.env")
+if dest.exists() and "HOOK=" in dest.read_text():
+    os.chmod(dest, 0o600)
+else:
+    hook = ""
+    cfg = Path("/etc/mediamtx/mediamtx.yml")
+    if cfg.exists():
+        for line in cfg.read_text().splitlines():
+            if line.startswith("authHTTPAddress:"):
+                url = line.split(":", 1)[1].strip()
+                hook = (parse_qs(urlparse(url).query).get("ingest_secret") or [""])[0]
+                break
+    if hook:
+        dest.write_text("HOOK=" + hook + "\\n")
+        os.chmod(dest, 0o600)
+PY
 MTX_RESTART=0
 if [ -f /etc/mediamtx/mediamtx.yml ]; then
   python3 - <<'PY'

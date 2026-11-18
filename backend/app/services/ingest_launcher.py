@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import os
+import secrets
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -67,39 +70,8 @@ class AwsSpotLauncher:
             or "eu-north-1",
         )
 
-    def _publish_boot_scripts(self) -> tuple[str, str]:
-        """Upload agent sources under tmp/ so user-data stays under the EC2 16KB cap.
-
-        The dedicated instance role can GetObject on tmp/*; the API role can PutObject there.
-        """
-        settings = self._settings
-        bucket = (settings.s3_bucket or "").strip()
-        if not bucket:
-            raise RuntimeError("S3 bucket is required to publish ingest boot scripts")
-        agent = Path(__file__).with_name("ingest_agent.py").read_bytes()
-        onbox = Path(__file__).with_name("ingest_onbox_analyze.py").read_bytes()
-        digest = hashlib.sha256(agent + b"\0" + onbox).hexdigest()[:16]
-        agent_key = f"tmp/boot/{digest}/streamclip-analysis-agent.py"
-        onbox_key = f"tmp/boot/{digest}/streamclip_onbox_analyze.py"
-        region = settings.s3_region or settings.ingest_ec2_region or "eu-north-1"
-        from app.aws.session import boto3_session
-
-        client = boto3_session(settings).client("s3", region_name=region)
-        for key, body in ((agent_key, agent), (onbox_key, onbox)):
-            client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ContentType="text/x-python",
-            )
-        return agent_key, onbox_key
-
-    def _user_data(self, agent_key: str, onbox_key: str) -> str:
-        """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
-
-        Vercel only receives segment acks and persisted highlight JSON — never
-        runs FFmpeg / Bedrock for live segments.
-        """
+    def _boot_env_text(self) -> str:
+        """Shell env for the spot. Never logged and never placed in user-data."""
         settings = self._settings
         auth_url = (settings.ingest_api_auth_url or "").strip()
         event_url = (settings.ingest_api_event_url or "").strip()
@@ -110,40 +82,85 @@ class AwsSpotLauncher:
             if settings.ingest_hook_secret
             else ""
         )
-        bucket = (settings.s3_bucket or "").strip()
-        region = (
-            settings.ingest_ec2_region
-            or settings.s3_region
-            or "eu-north-1"
-        )
-        asr_provider = (settings.asr_provider or "none").strip()
-        asr_key = (
-            settings.asr_api_key.get_secret_value() if settings.asr_api_key else ""
-        )
-        asr_base = (settings.asr_base_url or "https://api.groq.com/openai/v1").strip()
-        asr_model = (settings.asr_model or "whisper-large-v3-turbo").strip()
-        bedrock_region = (settings.bedrock_region or "us-east-1").strip()
-        bedrock_model = (settings.bedrock_model or "us.openai.gpt-6-luna").strip()
-        # Secret on query string: MediaMTX 1.12 has no authHTTPAdditionalHeaders.
         auth_with_secret = f"{auth_url}?ingest_secret={hook}" if auth_url else ""
-        # Escape single quotes for embedding in shell single-quoted strings.
+        values = {
+            "HOOK": hook,
+            "EVENT_URL": event_url,
+            "S3_BUCKET": (settings.s3_bucket or "").strip(),
+            "AWS_REGION": (
+                settings.ingest_ec2_region or settings.s3_region or "eu-north-1"
+            ),
+            "ASR_PROVIDER": (settings.asr_provider or "none").strip(),
+            "ASR_API_KEY": (
+                settings.asr_api_key.get_secret_value() if settings.asr_api_key else ""
+            ),
+            "ASR_BASE_URL": (settings.asr_base_url or "https://api.groq.com/openai/v1").strip(),
+            "ASR_MODEL": (settings.asr_model or "whisper-large-v3-turbo").strip(),
+            "BEDROCK_REGION": (settings.bedrock_region or "us-east-1").strip(),
+            "BEDROCK_MODEL": (settings.bedrock_model or "us.openai.gpt-6-luna").strip(),
+            "AUTH_HTTP_ADDRESS": auth_with_secret,
+        }
+        lines = []
+        for key, value in values.items():
+            if "\n" in value or "\r" in value:
+                raise RuntimeError(f"{key} contains a newline")
+            lines.append(f"{key}={shlex.quote(value)}")
+        return "\n".join(lines) + "\n"
+
+    def _publish_boot_bundle(self) -> tuple[str, str]:
+        """Upload boot files with SSE-C. Returns (s3 prefix, base64 seal).
+
+        User-data carries only the one-time seal, not hook, ASR, or AWS keys.
+        Another instance cannot read the objects without that seal.
+        """
+        settings = self._settings
+        bucket = (settings.s3_bucket or "").strip()
+        if not bucket:
+            raise RuntimeError("S3 bucket is required to publish ingest boot scripts")
+        agent = Path(__file__).with_name("ingest_agent.py").read_bytes()
+        onbox = Path(__file__).with_name("ingest_onbox_analyze.py").read_bytes()
+        prefix = f"tmp/boot/{secrets.token_urlsafe(24)}"
+        seal = os.urandom(32)
+        seal_b64 = base64.b64encode(seal).decode("ascii")
+        seal_md5 = base64.b64encode(hashlib.md5(seal).digest()).decode("ascii")
+        region = settings.s3_region or settings.ingest_ec2_region or "eu-north-1"
+        from app.aws.session import boto3_session
+
+        client = boto3_session(settings).client("s3", region_name=region)
+
+        def put(name: str, body: bytes, content_type: str) -> None:
+            client.put_object(
+                Bucket=bucket,
+                Key=f"{prefix}/{name}",
+                Body=body,
+                ContentType=content_type,
+                SSECustomerAlgorithm="AES256",
+                SSECustomerKey=seal_b64,
+                SSECustomerKeyMD5=seal_md5,
+            )
+
+        put("agent.env", self._boot_env_text().encode(), "text/plain")
+        put("agent.py", agent, "text/x-python")
+        put("onbox.py", onbox, "text/x-python")
+        return prefix, seal_b64
+
+    def _user_data(self, boot_prefix: str, boot_seal: str) -> str:
+        """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
+
+        Vercel only receives segment acks and persisted highlight JSON — never
+        runs FFmpeg / Bedrock for live segments.
+        """
+        settings = self._settings
+        bucket = (settings.s3_bucket or "").strip()
+        region = settings.ingest_ec2_region or settings.s3_region or "eu-north-1"
+
         def _sq(value: str) -> str:
             return value.replace("'", "'\\''")
 
-        hook_q = _sq(hook)
-        event_q = _sq(event_url)
         bucket_q = _sq(bucket)
         region_q = _sq(region)
-        auth_q = _sq(auth_with_secret)
-        asr_provider_q = _sq(asr_provider)
-        asr_key_q = _sq(asr_key)
-        asr_base_q = _sq(asr_base)
-        asr_model_q = _sq(asr_model)
-        bedrock_region_q = _sq(bedrock_region)
-        bedrock_model_q = _sq(bedrock_model)
-
-        agent_key_q = _sq(agent_key)
-        onbox_key_q = _sq(onbox_key)
+        prefix_q = _sq(boot_prefix)
+        seal_q = _sq(boot_seal)
 
         # Native MediaMTX + :8080 analysis (5-min buffer → S3 → local Luna).
         # AL2023 has no ffmpeg package — install static arm64 build.
@@ -163,19 +180,26 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 ffmpeg -version | head -1
 export AWS_DEFAULT_REGION='{region_q}'
-cat > /etc/streamclip/agent.env <<ENV
-HOOK={hook_q}
-EVENT_URL={event_q}
-S3_BUCKET={bucket_q}
-AWS_REGION={region_q}
-ASR_PROVIDER={asr_provider_q}
-ASR_API_KEY={asr_key_q}
-ASR_BASE_URL={asr_base_q}
-ASR_MODEL={asr_model_q}
-BEDROCK_REGION={bedrock_region_q}
-BEDROCK_MODEL={bedrock_model_q}
-ENV
+S3_BUCKET='{bucket_q}'
+BOOT_PREFIX='{prefix_q}'
+BOOT_SEAL='{seal_q}'
+umask 077
+fetch_boot() {{
+  aws s3api get-object \\
+    --bucket "$S3_BUCKET" \\
+    --key "$BOOT_PREFIX/$1" \\
+    --sse-customer-algorithm AES256 \\
+    --sse-customer-key "$BOOT_SEAL" \\
+    --region "$AWS_DEFAULT_REGION" \\
+    "$2" >/dev/null
+}}
+fetch_boot agent.env /etc/streamclip/agent.env
+fetch_boot agent.py /usr/local/bin/streamclip-analysis-agent.py
+fetch_boot onbox.py /usr/local/bin/streamclip_onbox_analyze.py
 chmod 600 /etc/streamclip/agent.env
+chmod 700 /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
+unset BOOT_SEAL
+# Secrets stay in agent.env (root-only). Do not echo that file.
 MTX_VER=1.12.3
 curl -fsSL "https://github.com/bluenviron/mediamtx/releases/download/v${{MTX_VER}}/mediamtx_v${{MTX_VER}}_linux_arm64.tar.gz" \\
   | tar -xz -C /usr/local/bin mediamtx
@@ -283,9 +307,7 @@ done
 AGENT
 chmod +x /usr/local/bin/streamclip-segment-loop
 
-aws s3 cp "s3://{bucket_q}/{agent_key_q}" /usr/local/bin/streamclip-analysis-agent.py --region "{region_q}"
-aws s3 cp "s3://{bucket_q}/{onbox_key_q}" /usr/local/bin/streamclip_onbox_analyze.py --region "{region_q}"
-chmod +x /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
+# Agent binaries are fetched above (encrypted). Nothing secret is embedded here.
 
 cat > /usr/local/bin/streamclip-on-ready <<'ONREADY'
 #!/bin/bash
@@ -369,7 +391,24 @@ pathDefaults:
 paths:
   all_others:
 YAML
-sed -i "s|AUTH_HTTP_ADDRESS_PLACEHOLDER|{auth_q}|" /etc/mediamtx/mediamtx.yml
+python3 - <<'PY'
+import os
+import shlex
+from pathlib import Path
+env = dict()
+for line in Path("/etc/streamclip/agent.env").read_text().splitlines():
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, raw = line.partition("=")
+    env[key] = shlex.split(raw, posix=True)[0] if raw else ""
+path = Path("/etc/mediamtx/mediamtx.yml")
+text = path.read_text().replace(
+    "AUTH_HTTP_ADDRESS_PLACEHOLDER", env.get("AUTH_HTTP_ADDRESS", "")
+)
+path.write_text(text)
+os.chmod(path, 0o600)
+os.chmod("/etc/streamclip/agent.env", 0o600)
+PY
 
 cat > /etc/systemd/system/streamclip-agent.service <<'UNIT'
 [Unit]
@@ -414,8 +453,8 @@ systemctl enable --now mediamtx
 
         def _run() -> LaunchResult:
             client = self._client()
-            agent_key, onbox_key = self._publish_boot_scripts()
-            raw_user_data = self._user_data(agent_key, onbox_key).encode("utf-8")
+            boot_prefix, boot_seal = self._publish_boot_bundle()
+            raw_user_data = self._user_data(boot_prefix, boot_seal).encode("utf-8")
             user_data_b64 = base64.b64encode(raw_user_data).decode("ascii")
             # EC2 rejects encoded user-data above 25600 bytes (16KB raw).
             if len(user_data_b64) > 25000:
