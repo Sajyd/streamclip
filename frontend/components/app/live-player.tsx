@@ -41,7 +41,8 @@ export function LivePlayer({ src, status, message, className, fill = false }: Pr
     setLoading(true);
     let cancelled = false;
     let hls: Hls | null = null;
-    let networkRetries = 0;
+    let retryTimer = 0;
+    let attempt = 0;
 
     const tryPlay = async () => {
       if (!video || cancelled) return;
@@ -73,63 +74,89 @@ export function LivePlayer({ src, status, message, className, fill = false }: Pr
       }
     };
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
-      video.addEventListener("loadedmetadata", () => void tryPlay(), { once: true });
-      video.addEventListener(
-        "error",
-        () => onFatal("Aperçu indisponible pour le moment."),
-        { once: true },
-      );
-    } else if (Hls.isSupported()) {
+    const scheduleRetry = () => {
+      attempt += 1;
+      if (attempt > 40) {
+        onFatal("Aperçu indisponible — réessayez dans un instant.");
+        return;
+      }
+      window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(() => {
+        if (!cancelled) attach();
+      }, 1500);
+    };
+
+    let clearNative = () => {};
+
+    const attach = () => {
+      if (!video || cancelled) return;
+      clearNative();
+      hls?.destroy();
+      hls = null;
+      hlsRef.current = null;
+      video.removeAttribute("src");
+      setError(null);
+      setLoading(true);
+
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        const onReady = () => void tryPlay();
+        const onError = () => scheduleRetry();
+        video.addEventListener("loadedmetadata", onReady);
+        video.addEventListener("error", onError);
+        clearNative = () => {
+          video.removeEventListener("loadedmetadata", onReady);
+          video.removeEventListener("error", onError);
+        };
+        video.src = src;
+        return;
+      }
+      if (!Hls.isSupported()) {
+        onFatal("Lecture non supportée sur ce navigateur.");
+        return;
+      }
       hls = new Hls({
-        enableWorker: true,
+        // Blob workers are blocked by the page CSP; demux on the main thread.
+        enableWorker: false,
         lowLatencyMode: true,
         liveSyncDurationCount: 3,
-        // Manifest may appear a few seconds after going live.
-        manifestLoadingMaxRetry: 6,
-        manifestLoadingRetryDelay: 1500,
-        levelLoadingMaxRetry: 6,
-        fragLoadingMaxRetry: 6,
+        manifestLoadingMaxRetry: 4,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingMaxRetry: 4,
+        fragLoadingMaxRetry: 4,
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true;
+        },
       });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        networkRetries = 0;
+        attempt = 0;
         void tryPlay();
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          networkRetries += 1;
-          if (networkRetries <= 8) {
-            window.setTimeout(() => hls?.startLoad(), 1000);
-            return;
-          }
-          onFatal("Aperçu indisponible — réessayez dans un instant.");
-          hls?.destroy();
-          hlsRef.current = null;
-          return;
-        }
+        if (!data.fatal || cancelled) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           try {
             hls?.recoverMediaError();
             return;
           } catch {
-            // fall through
+            // Reattach below.
           }
         }
-        onFatal("Aperçu indisponible pour le moment.");
         hls?.destroy();
+        hls = null;
         hlsRef.current = null;
+        scheduleRetry();
       });
-    } else {
-      onFatal("Lecture non supportée sur ce navigateur.");
-    }
+    };
+
+    attach();
 
     return () => {
       cancelled = true;
+      window.clearTimeout(retryTimer);
+      clearNative();
       hls?.destroy();
       hlsRef.current = null;
       video.removeAttribute("src");
@@ -162,15 +189,15 @@ export function LivePlayer({ src, status, message, className, fill = false }: Pr
   return (
     <div
       className={cx(
-        "overflow-hidden rounded-2xl border border-white/10 bg-ink-950",
-        fill ? "relative h-full min-h-[22rem]" : null,
+        "relative isolate z-0 overflow-hidden rounded-2xl border border-white/10 bg-ink-950 [contain:paint]",
+        fill ? "min-h-[16rem]" : null,
         className,
       )}
     >
-      <div className={cx("relative bg-black", fill ? "absolute inset-0" : "aspect-video")}>
+      <div className="relative aspect-video bg-black">
         <video
           ref={videoRef}
-          className="size-full object-contain"
+          className="absolute inset-0 size-full object-contain"
           controls
           playsInline
           muted
@@ -190,33 +217,30 @@ export function LivePlayer({ src, status, message, className, fill = false }: Pr
           )}
         </div>
         {showOverlay ? (
-          <button
-            type="button"
-            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-ink-950/80 px-6 text-center"
-            onClick={() => {
-              if (canPreview && !error) void startPlayback();
-            }}
-            disabled={!canPreview || Boolean(error)}
-          >
+          <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-ink-950/75 px-6 text-center">
             {needsGesture && canPreview && !error ? (
-              <>
+              <button
+                type="button"
+                className="pointer-events-auto flex flex-col items-center gap-3"
+                onClick={() => void startPlayback()}
+              >
                 <span className="flex size-14 items-center justify-center rounded-full bg-white/15 text-2xl text-white">
                   ▶
                 </span>
                 <p className="text-sm text-ink-200">Appuyez pour lancer l&apos;aperçu</p>
-              </>
+              </button>
             ) : (
               <p className="text-sm text-ink-300">
                 {error ||
                   (loading && canPreview
-                    ? "Chargement de l'aperçu…"
+                    ? "Connexion à l'aperçu…"
                     : message ||
                       (canPreview
-                        ? "Chargement de l'aperçu…"
+                        ? "Connexion à l'aperçu…"
                         : "En attente de votre diffusion…"))}
               </p>
             )}
-          </button>
+          </div>
         ) : null}
       </div>
     </div>

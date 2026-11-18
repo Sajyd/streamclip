@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -46,6 +47,9 @@ class PlaybackInfo:
     message: str
     stream_key_hint: str | None = None
     organization_id: uuid.UUID | None = None
+    # MediaMTX path OBS actually published (may include the stream secret).
+    # Server-side only — never returned to the browser.
+    publish_path: str | None = None
 
 
 def _signing_secret(settings: Settings) -> bytes | None:
@@ -87,9 +91,45 @@ def verify_preview_token(settings: Settings, token: str | None, *, public_id: st
     return hmac.compare_digest(sig, expected)
 
 
-def agent_hls_url(host: str, public_id: str, *, file_path: str, token: str | None) -> str:
-    safe = file_path.lstrip("/")
-    base = f"http://{host}:{_AGENT_PORT}/hls/live/{quote(public_id, safe='')}/{safe}"
+_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$")
+
+
+def sanitize_publish_path(raw: str | None) -> str | None:
+    """Keep a MediaMTX path and drop anything that could escape the HLS prefix."""
+    if not raw:
+        return None
+    path = raw.strip().split("?", 1)[0].strip("/")
+    if not path or ".." in path.split("/") or not _PATH_RE.fullmatch(path):
+        return None
+    return path
+
+
+def hls_stream_path(info: PlaybackInfo) -> str:
+    """Directory MediaMTX uses for this live.
+
+    OBS is given server ``…/live`` and stream key ``{public_id}/{secret}``, so the
+    real path is ``live/{public_id}/{secret}``. Falling back to ``live/{public_id}``
+    only covers publishers that put the secret in the RTMP password instead.
+    """
+    stored = sanitize_publish_path(info.publish_path)
+    if stored:
+        return stored
+    if info.public_id:
+        return f"live/{info.public_id}"
+    return ""
+
+
+def hls_leaf_name(file_path: str) -> str:
+    name = file_path.strip().split("?", 1)[0].strip("/").split("/")[-1]
+    if not name or name in {".", ".."} or not _PATH_RE.fullmatch(name):
+        return ""
+    return name
+
+
+def agent_hls_url(host: str, stream_path: str, *, file_path: str, token: str | None) -> str:
+    parts = [quote(part, safe="") for part in stream_path.strip("/").split("/") if part]
+    leaf = quote(hls_leaf_name(file_path) or file_path.strip("/").split("/")[-1], safe="")
+    base = f"http://{host}:{_AGENT_PORT}/hls/{'/'.join(parts)}/{leaf}"
     if token:
         sep = "&" if "?" in base else "?"
         return f"{base}{sep}token={quote(token, safe='')}"
@@ -125,6 +165,82 @@ async def _active_session(
     return stream, key
 
 
+async def _publish_path(session, stream: StreamSession) -> str | None:
+    """Path MediaMTX recorded when it accepted the publisher."""
+    from app.models.system import AuditLog
+
+    details = (
+        await session.execute(
+            select(AuditLog.details)
+            .where(
+                AuditLog.organization_id == stream.organization_id,
+                AuditLog.action == "ingest.publish_auth",
+                AuditLog.target_id == str(stream.id),
+            )
+            .order_by(AuditLog.occurred_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not isinstance(details, dict):
+        return None
+    raw = details.get("path")
+    return sanitize_publish_path(raw if isinstance(raw, str) else None)
+
+
+def _assemble_playback(
+    *,
+    stream: StreamSession | None,
+    key: StreamKey | None,
+    dedicated_host: str | None,
+    edge_host: str | None,
+    organization_id: uuid.UUID,
+    publish_path: str | None,
+    offline_message: str,
+) -> PlaybackInfo:
+    public_id = key.public_id if key else None
+    rtmp = ingest_nodes.rtmp_url_for_host(dedicated_host) if dedicated_host else None
+    hint = key.key_hint if key else None
+    base = dict(
+        public_id=public_id,
+        rtmp_url=rtmp,
+        stream_key_hint=hint,
+        organization_id=organization_id,
+        publish_path=publish_path,
+    )
+    if stream is None:
+        return PlaybackInfo(
+            status="offline",
+            session_id=None,
+            title=None,
+            preview_available=False,
+            message=offline_message,
+            **base,
+        )
+    # HLS is remuxed on the shared edge as soon as OBS connects. A dedicated
+    # spot is only a fallback host — waiting for it left the preview blank.
+    can_preview = bool(public_id and (edge_host or dedicated_host) and stream.status in _LIVE)
+    if stream.status not in _LIVE:
+        status, preview, message = "offline", False, offline_message
+    elif not can_preview:
+        status, preview, message = (
+            "starting",
+            False,
+            "Aperçu en préparation — le flux n'est pas encore joignable.",
+        )
+    elif stream.status == StreamSessionStatus.PENDING:
+        status, preview, message = "starting", True, "Préparation de l'aperçu…"
+    else:
+        status, preview, message = "live", True, "Live en cours."
+    return PlaybackInfo(
+        status=status,
+        session_id=stream.id,
+        title=stream.title,
+        preview_available=preview,
+        message=message,
+        **base,
+    )
+
+
 async def playback_for_org(ctx: AppContext, organization_id: uuid.UUID) -> PlaybackInfo:
     async with ctx.db.system_tx() as session:
         stream, key = await _active_session(session, organization_id)
@@ -133,45 +249,17 @@ async def playback_for_org(ctx: AppContext, organization_id: uuid.UUID) -> Playb
             from app.models.media import IngestNode
 
             node = await session.get(IngestNode, stream.ingest_node_id)
+        publish_path = await _publish_path(session, stream) if stream is not None else None
 
-    public_id = key.public_id if key else None
-    host = node.public_hostname if node and node.status.value == "ready" else None
-    rtmp = ingest_nodes.rtmp_url_for_host(host) if host else None
-
-    if stream is None:
-        return PlaybackInfo(
-            status="offline",
-            session_id=None,
-            public_id=public_id,
-            title=None,
-            rtmp_url=rtmp,
-            preview_available=False,
-            message="Aucun live en cours.",
-            stream_key_hint=key.key_hint if key else None,
-            organization_id=organization_id,
-        )
-    if not host or not public_id:
-        return PlaybackInfo(
-            status="starting",
-            session_id=stream.id,
-            public_id=public_id,
-            title=stream.title,
-            rtmp_url=rtmp,
-            preview_available=False,
-            message="Instance dédiée en cours de démarrage — l'aperçu arrive dans un instant.",
-            stream_key_hint=key.key_hint if key else None,
-            organization_id=organization_id,
-        )
-    return PlaybackInfo(
-        status="live",
-        session_id=stream.id,
-        public_id=public_id,
-        title=stream.title,
-        rtmp_url=rtmp,
-        preview_available=True,
-        message="Live en cours.",
-        stream_key_hint=key.key_hint if key else None,
+    dedicated = node.public_hostname if node and node.status.value == "ready" else None
+    return _assemble_playback(
+        stream=stream,
+        key=key,
+        dedicated_host=dedicated,
+        edge_host=edge_preview_host(ctx.settings),
         organization_id=organization_id,
+        publish_path=publish_path,
+        offline_message="Aucun live en cours.",
     )
 
 
@@ -201,46 +289,17 @@ async def playback_for_live(ctx: AppContext, live_id: uuid.UUID) -> PlaybackInfo
             from app.models.media import IngestNode
 
             node = await session.get(IngestNode, stream.ingest_node_id)
+        publish_path = await _publish_path(session, stream)
 
-    public_id = key.public_id if key else None
-    host = node.public_hostname if node and node.status.value == "ready" else None
-    rtmp = ingest_nodes.rtmp_url_for_host(host) if host else None
-    is_live = stream.status in _LIVE
-
-    if not is_live:
-        return PlaybackInfo(
-            status="offline",
-            session_id=stream.id,
-            public_id=public_id,
-            title=stream.title,
-            rtmp_url=rtmp,
-            preview_available=False,
-            message="Ce live n'est plus en cours.",
-            stream_key_hint=key.key_hint if key else None,
-            organization_id=stream.organization_id,
-        )
-    if not host or not public_id:
-        return PlaybackInfo(
-            status="starting",
-            session_id=stream.id,
-            public_id=public_id,
-            title=stream.title,
-            rtmp_url=rtmp,
-            preview_available=False,
-            message="Instance dédiée indisponible pour l'aperçu.",
-            stream_key_hint=key.key_hint if key else None,
-            organization_id=stream.organization_id,
-        )
-    return PlaybackInfo(
-        status="live",
-        session_id=stream.id,
-        public_id=public_id,
-        title=stream.title,
-        rtmp_url=rtmp,
-        preview_available=True,
-        message="Live en cours.",
-        stream_key_hint=key.key_hint if key else None,
+    dedicated = node.public_hostname if node and node.status.value == "ready" else None
+    return _assemble_playback(
+        stream=stream,
+        key=key,
+        dedicated_host=dedicated,
+        edge_host=edge_preview_host(ctx.settings),
         organization_id=stream.organization_id,
+        publish_path=publish_path,
+        offline_message="Ce live n'est plus en cours.",
     )
 
 
@@ -282,17 +341,17 @@ def _preview_hosts(
 async def _fetch_hls(
     *,
     host: str,
-    public_id: str,
+    stream_path: str,
     file_path: str,
     token: str | None,
     headers: dict[str, str],
 ) -> httpx.Response:
-    url = agent_hls_url(host, public_id, file_path=file_path, token=token)
+    url = agent_hls_url(host, stream_path, file_path=file_path, token=token)
     async with httpx.AsyncClient(timeout=8.0) as client:
         response = await client.get(url, headers=headers)
         # MediaMTX: index.m3u8 (master) may 404 briefly; stream.m3u8 is the media playlist.
         if response.status_code == 404 and file_path.rstrip("/").endswith("index.m3u8"):
-            alt = agent_hls_url(host, public_id, file_path="stream.m3u8", token=token)
+            alt = agent_hls_url(host, stream_path, file_path="stream.m3u8", token=token)
             response = await client.get(alt, headers=headers)
         return response
 
@@ -322,6 +381,10 @@ async def proxy_hls(
     hosts = _preview_hosts(ctx.settings, dedicated_host=dedicated_host)
     if not hosts:
         raise ServiceUnavailableError("Instance dédiée hors ligne.", code="preview_unavailable")
+    stream_path = hls_stream_path(info)
+    leaf = hls_leaf_name(file_path)
+    if not stream_path or not leaf:
+        raise NotFoundError("Segment introuvable.", code="preview_not_found")
 
     token = mint_preview_token(ctx.settings, public_id=info.public_id)
     headers: dict[str, str] = {}
@@ -337,8 +400,8 @@ async def proxy_hls(
         try:
             response = await _fetch_hls(
                 host=host,
-                public_id=info.public_id,
-                file_path=file_path,
+                stream_path=stream_path,
+                file_path=leaf,
                 token=token,
                 headers=headers,
             )
@@ -371,8 +434,8 @@ async def proxy_hls(
             try:
                 response = await _fetch_hls(
                     host=hosts[1],
-                    public_id=info.public_id,
-                    file_path=file_path,
+                    stream_path=stream_path,
+                    file_path=leaf,
                     token=token,
                     headers=headers,
                 )

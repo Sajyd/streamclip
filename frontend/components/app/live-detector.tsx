@@ -17,10 +17,13 @@ export function LiveDetector({
   sessions: initialSessions,
   onDetected,
   pollMs = 4000,
+  persistDetection = true,
 }: {
   sessions: StreamSession[];
   onDetected?: () => void;
   pollMs?: number;
+  /** Dashboard is past onboarding — skip the server action that blocks navigation. */
+  persistDetection?: boolean;
 }) {
   const [sessions, setSessions] = useState(initialSessions);
   const announced = useRef(false);
@@ -59,10 +62,14 @@ export function LiveDetector({
   useEffect(() => {
     if (!live || announced.current) return;
     announced.current = true;
+    if (!persistDetection) {
+      onDetected?.();
+      return;
+    }
     void saveOnboardingAction({ live_detected: true, step: "live" }).then(() => {
       onDetected?.();
     });
-  }, [live, onDetected]);
+  }, [live, onDetected, persistDetection]);
 
   if (live) {
     return (

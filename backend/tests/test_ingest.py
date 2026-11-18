@@ -383,6 +383,46 @@ async def test_hook_requires_shared_secret(client: httpx.AsyncClient) -> None:
     assert response.status_code == 401
 
 
+async def test_playback_uses_the_obs_publish_path(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """OBS server is …/live and the key is {public_id}/{secret}, so HLS lives there."""
+    from app.services.playback import agent_hls_url, hls_stream_path, playback_for_org
+
+    account = await register(client, email="ingest-preview-path@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    path = f"live/{public_id}/{secret}"
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+    opened = await client.post(
+        f"{API}/ingest/hooks/auth",
+        json={
+            "action": "publish",
+            "path": path,
+            "protocol": "rtmp",
+            "password": secret,
+            "ip": "203.0.113.20",
+        },
+        headers=hook,
+    )
+    assert opened.status_code == 200, opened.text
+
+    info = await playback_for_org(ctx, account.organization_id)
+    assert info.status == "live"
+    assert info.preview_available is True
+    assert info.publish_path == path
+    upstream = agent_hls_url("edge.ingest.test", hls_stream_path(info), file_path="index.m3u8", token=None)
+    assert upstream == f"http://edge.ingest.test:8080/hls/{path}/index.m3u8"
+
+    playback = await client.get(f"{API}/ingest/playback", headers=account.headers)
+    assert playback.status_code == 200, playback.text
+    body = playback.json()
+    assert body["status"] == "live"
+    assert body["preview_available"] is True
+    assert secret not in playback.text
+    assert "publish_path" not in body
+
+
 async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True

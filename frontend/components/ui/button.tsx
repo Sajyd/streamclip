@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { ComponentProps } from "react";
 
 import { cx } from "@/lib/format";
@@ -39,8 +38,8 @@ export function buttonClasses({
   );
 }
 
-type ButtonLinkProps = ComponentProps<typeof Link> & { variant?: ButtonVariant; size?: ButtonSize };
+type ButtonLinkProps = ComponentProps<"a"> & { variant?: ButtonVariant; size?: ButtonSize };
 
 export function ButtonLink({ variant, size, className, ...props }: ButtonLinkProps) {
-  return <Link className={buttonClasses({ variant, size, className })} {...props} />;
+  return <a className={buttonClasses({ variant, size, className })} {...props} />;
 }

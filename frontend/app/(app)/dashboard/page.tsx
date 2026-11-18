@@ -150,7 +150,9 @@ async function Dashboard() {
         </div>
       </div>
 
-      {capabilities.ingest_keys ? <LiveDetector sessions={ingestSessions} /> : null}
+      {capabilities.ingest_keys ? (
+        <LiveDetector sessions={ingestSessions} persistDetection={false} />
+      ) : null}
 
       {overview.payment_failed ? (
         <Notice tone="danger" title="Le dernier paiement a échoué">

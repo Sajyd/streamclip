@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { cx } from "@/lib/format";
@@ -23,7 +22,7 @@ export function AppNav() {
       {LINKS.map((link) => {
         const active = pathname === link.href || pathname.startsWith(`${link.href}/`);
         return (
-          <Link
+          <a
             key={link.href}
             href={link.href}
             aria-current={active ? "page" : undefined}
@@ -35,7 +34,7 @@ export function AppNav() {
             )}
           >
             {link.label}
-          </Link>
+          </a>
         );
       })}
     </nav>
