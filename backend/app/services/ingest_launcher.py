@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import secrets
+import gzip
+import io
 import shlex
 import time
+import tokenize
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,48 @@ import structlog
 from app.core.config import Settings
 
 log = structlog.get_logger(__name__)
+
+
+def _shrink_python(src: str) -> str:
+    """Drop comments and docstrings so the gzipped user-data fits in 16 KiB."""
+    tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    skip_types = (
+        tokenize.COMMENT,
+        tokenize.NL,
+        tokenize.NEWLINE,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.ENCODING,
+        tokenize.ENDMARKER,
+    )
+    meaningful = [i for i, tok in enumerate(tokens) if tok.type not in skip_types]
+    drop: set[int] = set()
+    for n, index in enumerate(meaningful):
+        tok = tokens[index]
+        if tok.type != tokenize.STRING:
+            continue
+        if not (tok.string.startswith('"""') or tok.string.startswith("'''")):
+            continue
+        prev = tokens[meaningful[n - 1]].type if n else None
+        if prev in (None, tokenize.INDENT, tokenize.COLON):
+            drop.add(index)
+    kept = [
+        tok
+        for i, tok in enumerate(tokens)
+        if i not in drop and tok.type not in (tokenize.COMMENT, tokenize.NL)
+    ]
+    return tokenize.untokenize(kept)
+
+
+def _strip_shell_comments(src: str) -> str:
+    """Drop # comments. Keep shebangs so the embedded scripts stay executable."""
+    kept = []
+    for line in src.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("#") and not stripped.startswith("#!"):
+            continue
+        kept.append(line)
+    return "".join(kept)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +137,7 @@ class AwsSpotLauncher:
         )
 
     def _boot_env_text(self) -> str:
-        """Shell env for the spot. Never logged and never placed in user-data."""
+        """Shell env for the spot. Stays in user-data, never in the media bucket."""
         settings = self._settings
         auth_url = (settings.ingest_api_auth_url or "").strip()
         event_url = (settings.ingest_api_event_url or "").strip()
@@ -129,97 +173,113 @@ class AwsSpotLauncher:
             lines.append(f"{key}={shlex.quote(value)}")
         return "\n".join(lines) + "\n"
 
-    def _publish_boot_bundle(self) -> str:
-        """Upload boot files under tmp/. Returns the S3 prefix.
+    def _packed_agent_source(self) -> str:
+        """Agent source embedded in user-data.
 
-        User-data does not contain hook, ASR, or AWS keys. The bucket's own
-        encryption applies; customer-provided keys are rejected by the bucket.
+        The dashboard stylesheet is replaced with a short page so the gzipped
+        payload stays under the 16 KiB EC2 limit. Behavior of /health and
+        /status is unchanged; the page shows the same JSON.
         """
-        settings = self._settings
-        bucket = (settings.s3_bucket or "").strip()
-        if not bucket:
-            raise RuntimeError("S3 bucket is required to publish ingest boot scripts")
-        agent = Path(__file__).with_name("ingest_agent.py").read_bytes()
-        onbox = Path(__file__).with_name("ingest_onbox_analyze.py").read_bytes()
-        prefix = f"tmp/boot/{secrets.token_urlsafe(24)}"
-        region = settings.s3_region or settings.ingest_ec2_region or "eu-north-1"
-        from app.aws.session import boto3_session
+        text = Path(__file__).with_name("ingest_agent.py").read_text()
+        start = text.index("\ndef _render_html")
+        end = text.index("\ndef main")
+        stub = """
+def _render_html(title: str, payload: dict, *, page: str) -> bytes:
+    body = html.escape(json.dumps(payload, indent=2, default=str))
+    safe = html.escape(f"{title} · {page}")
+    doc = (
+        "<!DOCTYPE html><html><head><meta charset=utf-8>"
+        f"<title>{safe}</title></head><body><pre>{body}</pre></body></html>"
+    )
+    return doc.encode()
 
-        client = boto3_session(settings).client("s3", region_name=region)
-
-        def put(name: str, body: bytes, content_type: str) -> None:
-            client.put_object(
-                Bucket=bucket,
-                Key=f"{prefix}/{name}",
-                Body=body,
-                ContentType=content_type,
-            )
-
-        put("agent.env", self._boot_env_text().encode(), "text/plain")
-        put("agent.py", agent, "text/x-python")
-        put("onbox.py", onbox, "text/x-python")
-        put(
-            "bootstrap.sh",
-            self._bootstrap_script(region).encode(),
-            "text/x-shellscript",
-        )
-        return prefix
-
-    def _user_data(self, boot_prefix: str) -> str:
-        """Per-org spot: MediaMTX RTMP + :8080 on-box analysis (frames/ASR/Luna).
-
-        Vercel only receives segment acks and persisted highlight JSON — never
-        runs FFmpeg / Bedrock for live segments.
-        """
-        settings = self._settings
-        bucket = (settings.s3_bucket or "").strip()
-        region = settings.ingest_ec2_region or settings.s3_region or "eu-north-1"
-
-        def _sq(value: str) -> str:
-            return value.replace("'", "'\\''")
-
-        bucket_q = _sq(bucket)
-        region_q = _sq(region)
-        prefix_q = _sq(boot_prefix)
-
-        # Native MediaMTX + :8080 analysis (5-min buffer → S3 → local Luna).
-        # AL2023 has no ffmpeg package — install static arm64 build.
-        script = f"""#!/bin/bash
-set -eo pipefail
-dnf install -y awscli python3 python3-pip || dnf install -y aws-cli python3 python3-pip || true
-python3 -m pip install --upgrade pip || true
-python3 -m pip install 'boto3>=1.34' || true
-mkdir -p /etc/mediamtx /var/lib/streamclip/segments /var/run/streamclip /usr/local/bin /etc/streamclip
-if ! command -v ffmpeg >/dev/null 2>&1; then
-  FFDIR=$(mktemp -d)
-  curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"
-  tar -xJf "$FFDIR/ffmpeg.tar.xz" -C "$FFDIR"
-  install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffmpeg /usr/local/bin/ffmpeg
-  install -m 755 "$FFDIR"/ffmpeg-*-arm64-static/ffprobe /usr/local/bin/ffprobe || true
-  rm -rf "$FFDIR"
-fi
-ffmpeg -version | head -1
-export AWS_DEFAULT_REGION='{region_q}'
-S3_BUCKET='{bucket_q}'
-BOOT_PREFIX='{prefix_q}'
-umask 077
-aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/agent.env" /etc/streamclip/agent.env --region "$AWS_DEFAULT_REGION"
-aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/agent.py" /usr/local/bin/streamclip-analysis-agent.py --region "$AWS_DEFAULT_REGION"
-aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/onbox.py" /usr/local/bin/streamclip_onbox_analyze.py --region "$AWS_DEFAULT_REGION"
-chmod 600 /etc/streamclip/agent.env
-chmod 700 /usr/local/bin/streamclip-analysis-agent.py /usr/local/bin/streamclip_onbox_analyze.py
-aws s3 cp "s3://$S3_BUCKET/$BOOT_PREFIX/bootstrap.sh" /usr/local/bin/streamclip-bootstrap.sh --region "$AWS_DEFAULT_REGION"
-chmod 700 /usr/local/bin/streamclip-bootstrap.sh
-bash /usr/local/bin/streamclip-bootstrap.sh
 """
-        if len(script.encode("utf-8")) > 16384:
+        packed = text[:start] + stub + text[end:]
+        compile(packed, "ingest_agent.py", "exec")
+        return _shrink_python(packed)
+
+    def _packed_onbox_source(self) -> str:
+        text = Path(__file__).with_name("ingest_onbox_analyze.py").read_text()
+        shrunk = _shrink_python(text)
+        compile(shrunk, "ingest_onbox_analyze.py", "exec")
+        return shrunk
+
+    def _user_data_script(self) -> str:
+        """Self-contained boot script. Nothing is written to the media bucket."""
+        region = (
+            self._settings.ingest_ec2_region or self._settings.s3_region or "eu-north-1"
+        )
+        env_text = self._boot_env_text()
+        agent = self._packed_agent_source()
+        onbox = self._packed_onbox_source()
+        bootstrap = _strip_shell_comments(self._bootstrap_script(region))
+        chunks = {
+            "agent.env": env_text,
+            "agent": agent,
+            "onbox": onbox,
+            "bootstrap": bootstrap,
+        }
+        markers = {
+            "agent.env": "STREAMCLIP_ENV",
+            "agent": "STREAMCLIP_AGENT_PY",
+            "onbox": "STREAMCLIP_ONBOX_PY",
+        }
+        for label, body in chunks.items():
+            marker = markers.get(label)
+            if marker and f"\n{marker}\n" in f"\n{body}\n":
+                raise RuntimeError(f"{label} contains the user-data end marker")
+            if not body.endswith("\n"):
+                chunks[label] = body + "\n"
+        # Concatenate. An f-string would interpret braces in the Python sources.
+        return (
+            "#!/bin/bash\n"
+            "set -eo pipefail\n"
+            "umask 077\n"
+            "dnf install -y awscli python3 python3-pip"
+            " || dnf install -y aws-cli python3 python3-pip || true\n"
+            "python3 -m pip install --upgrade pip || true\n"
+            "python3 -m pip install 'boto3>=1.34' || true\n"
+            "mkdir -p /etc/mediamtx /var/lib/streamclip/segments"
+            " /var/run/streamclip /usr/local/bin /etc/streamclip\n"
+            "if ! command -v ffmpeg >/dev/null 2>&1; then\n"
+            "  FFDIR=$(mktemp -d)\n"
+            '  curl -fsSL "https://johnvansickle.com/ffmpeg/releases/'
+            'ffmpeg-release-arm64-static.tar.xz" -o "$FFDIR/ffmpeg.tar.xz"\n'
+            '  tar -xJf "$FFDIR/ffmpeg.tar.xz" -C "$FFDIR"\n'
+            "  install -m 755 \"$FFDIR\"/ffmpeg-*-arm64-static/ffmpeg"
+            " /usr/local/bin/ffmpeg\n"
+            "  install -m 755 \"$FFDIR\"/ffmpeg-*-arm64-static/ffprobe"
+            " /usr/local/bin/ffprobe || true\n"
+            '  rm -rf "$FFDIR"\n'
+            "fi\n"
+            "ffmpeg -version | head -1\n"
+            "cat > /etc/streamclip/agent.env <<'STREAMCLIP_ENV'\n"
+            + chunks["agent.env"]
+            + "STREAMCLIP_ENV\n"
+            "chmod 600 /etc/streamclip/agent.env\n"
+            "cat > /usr/local/bin/streamclip-analysis-agent.py <<'STREAMCLIP_AGENT_PY'\n"
+            + chunks["agent"]
+            + "STREAMCLIP_AGENT_PY\n"
+            "cat > /usr/local/bin/streamclip_onbox_analyze.py <<'STREAMCLIP_ONBOX_PY'\n"
+            + chunks["onbox"]
+            + "STREAMCLIP_ONBOX_PY\n"
+            "chmod 700 /usr/local/bin/streamclip-analysis-agent.py"
+            " /usr/local/bin/streamclip_onbox_analyze.py\n"
+            + chunks["bootstrap"]
+        )
+
+    def _user_data_gzip(self) -> bytes:
+        """Gzip for cloud-init. Decoded user-data must be <= 16384 bytes."""
+        raw = self._user_data_script().encode("utf-8")
+        packed = gzip.compress(raw, compresslevel=9, mtime=0)
+        if len(packed) > 16384:
             raise RuntimeError(
-                f"EC2 user-data is {len(script.encode('utf-8'))} bytes (limit 16384)"
+                f"EC2 user-data is {len(packed)} bytes gzipped (limit 16384)"
             )
-        return script
+        return packed
 
     def _bootstrap_script(self, region: str) -> str:
-        """Shell installed from S3. EC2 user-data itself cannot exceed 16 KiB."""
+        """MediaMTX, segment loop, and systemd units. Runs inside user-data."""
         region_q = region.replace("'", "'\\''")
         return f"""# Secrets stay in agent.env (root-only). Do not echo that file.
 MTX_VER=1.12.3
@@ -568,15 +628,11 @@ systemctl enable --now mediamtx
 
         def _run() -> LaunchResult:
             client = self._client()
-            boot_prefix = self._publish_boot_bundle()
-            raw_user_data = self._user_data(boot_prefix).encode("utf-8")
-            user_data_b64 = base64.b64encode(raw_user_data).decode("ascii")
-            # RunInstances rejects user-data whose raw size exceeds 16384 bytes.
-            if len(raw_user_data) > 16384:
-                raise RuntimeError(
-                    f"EC2 user-data is {len(raw_user_data)} bytes (limit 16384). "
-                    "Boot scripts must be fetched from S3."
-                )
+            # Gzip bytes, then base64. AWS decodes once and cloud-init unpacks gzip.
+            # The decoded gzip must stay <= 16384. Hook and ASR keys stay here,
+            # not in the media bucket (every spot can read tmp/*).
+            user_data_gz = self._user_data_gzip()
+            user_data_b64 = base64.b64encode(user_data_gz).decode("ascii")
             kwargs: dict = {
                 "ImageId": settings.ingest_ec2_ami_id,
                 "InstanceType": settings.ingest_ec2_instance_type or "t4g.medium",
@@ -585,6 +641,11 @@ systemctl enable --now mediamtx
                 "SubnetId": settings.ingest_ec2_subnet_id,
                 "SecurityGroupIds": [settings.ingest_ec2_security_group_id],
                 "UserData": user_data_b64,
+                "MetadataOptions": {
+                    "HttpTokens": "required",
+                    "HttpEndpoint": "enabled",
+                    "HttpPutResponseHopLimit": 1,
+                },
                 "InstanceMarketOptions": {
                     "MarketType": "spot",
                     "SpotOptions": {"InstanceInterruptionBehavior": "terminate"},

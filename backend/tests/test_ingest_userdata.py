@@ -1,23 +1,47 @@
-"""EC2 user-data must stay under the RunInstances 16 KiB raw limit."""
+"""EC2 user-data must stay under the RunInstances 16 KiB decoded limit."""
 
 from __future__ import annotations
+
+import gzip
 
 from app.services.ingest_launcher import AwsSpotLauncher
 
 
-def test_user_data_is_a_short_s3_bootstrap() -> None:
+class _Secret:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_secret_value(self) -> str:
+        return self._value
+
+
+def test_user_data_is_gzipped_and_never_uploaded() -> None:
     launcher = AwsSpotLauncher.__new__(AwsSpotLauncher)
 
     class _Settings:
         s3_bucket = "stream-clip"
         s3_region = "eu-north-1"
         ingest_ec2_region = "eu-north-1"
+        ingest_api_auth_url = "https://streamclip.fr/api/v1/ingest/hooks/auth"
+        ingest_api_event_url = "https://streamclip.fr/api/v1/ingest/hooks/event"
+        ingest_hook_secret = _Secret("hook-" + "a" * 40)
+        asr_provider = "groq"
+        asr_api_key = _Secret("gsk_" + "k" * 48)
+        asr_base_url = "https://api.groq.com/openai/v1"
+        asr_model = "whisper-large-v3-turbo"
+        bedrock_region = "us-east-1"
+        bedrock_model = "us.openai.gpt-6-luna"
 
     launcher._settings = _Settings()
-    raw = launcher._user_data("tmp/boot/example").encode()
-    bootstrap = launcher._bootstrap_script("eu-north-1")
+    blob = launcher._user_data_gzip()
+    script = gzip.decompress(blob).decode()
 
-    assert len(raw) <= 16384
-    assert b"streamclip-bootstrap.sh" in raw
-    assert "seg_${SAFE}.pid" in bootstrap
-    assert "AWS_DEFAULT_REGION=eu-north-1" in bootstrap
+    assert blob[:2] == b"\x1f\x8b"
+    assert len(blob) <= 16384
+    assert "tmp/boot/" not in script
+    assert "BOOT_PREFIX" not in script
+    assert "aws s3 cp" not in script.split("cat > /etc/streamclip/agent.env", 1)[0]
+    assert "HOOK=" in script
+    assert "seg_${SAFE}.pid" in script
+    assert "AWS_DEFAULT_REGION=eu-north-1" in script
+    assert not hasattr(launcher, "_publish_boot_bundle")
