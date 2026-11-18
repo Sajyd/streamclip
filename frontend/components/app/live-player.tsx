@@ -117,12 +117,24 @@ export function LivePlayer({ src, status, message, className, fill = false }: Pr
       hls = new Hls({
         // Blob workers are blocked by the page CSP; demux on the main thread.
         enableWorker: false,
-        lowLatencyMode: true,
-        liveSyncDurationCount: 3,
-        manifestLoadingMaxRetry: 4,
+        // A deeper buffer and long fragment retries: a slow link waits for the
+        // segment instead of skipping ahead (frozen picture, then a time jump).
+        lowLatencyMode: false,
+        liveSyncDurationCount: 5,
+        liveMaxLatencyDurationCount: 20,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferHole: 0.5,
+        manifestLoadingMaxRetry: 12,
         manifestLoadingRetryDelay: 1000,
-        levelLoadingMaxRetry: 4,
-        fragLoadingMaxRetry: 4,
+        manifestLoadingMaxRetryTimeout: 64000,
+        levelLoadingMaxRetry: 12,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingMaxRetry: 16,
+        fragLoadingRetryDelay: 1000,
+        fragLoadingMaxRetryTimeout: 90000,
+        fragLoadingTimeOut: 30000,
+        startFragPrefetch: true,
         xhrSetup: (xhr) => {
           xhr.withCredentials = true;
         },

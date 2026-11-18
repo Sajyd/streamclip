@@ -235,6 +235,21 @@ async def transcribe_window(ctx: AppContext, task: ClaimedTask) -> None:
             JobStatus.CANCELED,
         ):
             return
+        # Live windows are filled by the on-box agent. A leftover queued task
+        # must not flip an analyzed window back to skipped, and must not mark
+        # a still-open window skipped before frames/Luna land.
+        if window.status in (WindowStatus.ANALYZED, WindowStatus.QUEUED):
+            injected = (job.details or {}).get("audio_b64")
+            if not (isinstance(injected, str) and injected):
+                job.status = JobStatus.SKIPPED
+                job.error_code = "onbox_pipeline"
+                job.error_message = (
+                    "La transcription du live tourne sur l'instance dédiée "
+                    "(images + ASR + Luna), pas dans cette file."
+                )
+                job.finished_at = now
+                await session.flush()
+                return
         job.status = JobStatus.RUNNING
         job.started_at = now
         window.status = WindowStatus.ANALYZING

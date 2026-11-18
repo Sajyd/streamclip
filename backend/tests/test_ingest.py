@@ -117,7 +117,7 @@ async def test_relay_relaunches_spot_after_idle_terminate(
     )
     assert first.status_code == 200
     assert first.json()["status"] == "ready"
-    first_host = first.json()["rtmp_push_url"]
+    first_host = first.json()["rtmp_push_url"].removeprefix("rtmp://").split("/")[0]
 
     async with ctx.db.system_tx() as session:
         node = (
@@ -146,7 +146,9 @@ async def test_relay_relaunches_spot_after_idle_terminate(
     )
     assert second.status_code == 200, second.text
     assert second.json()["status"] == "ready"
-    assert second.json()["rtmp_push_url"] == first_host  # same fake org host
+    second_url = second.json()["rtmp_push_url"]
+    assert second_url.removeprefix("rtmp://").split("/")[0] == first_host
+    assert second_url.endswith("/sc_live_b")
 
     async with ctx.db.system_tx() as session:
         node = await session.get(IngestNode, node_id)

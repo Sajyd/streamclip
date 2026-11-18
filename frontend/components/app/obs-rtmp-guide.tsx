@@ -254,6 +254,13 @@ export function PluginConnectStep({ creds }: { creds: Creds | null }) {
           </span>
         </li>
       </ol>
+      <p className="rounded-2xl border border-white/10 bg-ink-950/60 px-4 py-3 text-sm text-ink-300">
+        Débit vidéo : <strong className="text-white">4 500 Kbps</strong> (6 000 maximum), contrôle{" "}
+        <strong className="text-white">CBR</strong>, intervalle d’images clés{" "}
+        <strong className="text-white">2 secondes</strong>. Dans OBS : Réglages → Avancé → Réseau,
+        activez « Ajuster dynamiquement le débit en cas de congestion ». Au-dessus de ce que
+        l’upload tient, OBS jette les images vidéo et garde le son : le segment fige.
+      </p>
     </div>
   );
 }
@@ -290,6 +297,11 @@ export function StreamlabsConnectStep(_props?: { creds?: Creds | null }) {
           <span>Au Go Live : cochez votre plateforme + STREAMCLIP.</span>
         </li>
       </ol>
+      <p className="rounded-2xl border border-white/10 bg-ink-950/60 px-4 py-3 text-sm text-ink-300">
+        Débit vidéo : <strong className="text-white">4 500 Kbps</strong> (6 000 maximum), CBR,
+        image clé toutes les <strong className="text-white">2 secondes</strong>. Si le compteur
+        d’images perdues monte, baissez le débit : sinon la vidéo se fige et le son continue.
+      </p>
     </div>
   );
 }

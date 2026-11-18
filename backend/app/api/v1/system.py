@@ -93,12 +93,14 @@ async def readyz(ctx: Ctx, deep: bool = False) -> JSONResponse:
 async def cron_drain(request: Request, ctx: Ctx) -> dict[str, Any]:
     """Frequent drain for email/default work and soft-disconnect finalize.
 
-    Live segment analysis is NOT drained here — it runs on each org's EC2 :8080.
+    Live frames/ASR/Luna run on each org's EC2. `analysis` is drained only so
+    leftover `analysis.transcribe` rows close instead of staying queued; the
+    handler does not download video or call Luna.
     """
     summary = await run_due_tasks(
         ctx,
         worker=f"drain-{getattr(request.state, 'request_id', 'unknown')}",
-        queues=["default", "ingest"],
+        queues=["default", "ingest", "analysis"],
         max_tasks=40,
         time_budget_seconds=50.0,
     )

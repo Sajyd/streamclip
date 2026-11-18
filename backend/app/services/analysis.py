@@ -14,14 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ids import uuid7
 from app.models.analysis import AnalysisJob, AnalysisWindow
 from app.models.enums import (
-    AnalysisJobKind,
     JobStatus,
     SegmentKind,
     SegmentStatus,
     WindowStatus,
 )
 from app.models.media import MediaSegment, StreamSession
-from app.tasks.queue import enqueue
 
 # Matches the model docstring: a ~5 minute slice.
 WINDOW_MS = 5 * 60 * 1000
@@ -33,13 +31,19 @@ async def schedule_windows_for_progress(
     *,
     previous_processed_ms: int,
     current_processed_ms: int,
-) -> list[AnalysisJob]:
-    """Create queued windows/jobs for every full window boundary newly crossed."""
+) -> list[AnalysisWindow]:
+    """Open one queued window per newly completed 5-minute slice.
+
+    Frames, ASR, and Luna run on the dedicated EC2. This must not enqueue
+    `analysis.transcribe`: that queue is not drained during a live, and the
+    handler looks for an audio-only segment the recorder never writes, so the
+    tasks sit on `queued` and then skip.
+    """
     if current_processed_ms <= previous_processed_ms:
         return []
     first_seq = previous_processed_ms // WINDOW_MS
     last_complete_seq = (current_processed_ms // WINDOW_MS) - 1
-    created: list[AnalysisJob] = []
+    created: list[AnalysisWindow] = []
     for sequence in range(first_seq, last_complete_seq + 1):
         start_ms = sequence * WINDOW_MS
         end_ms = start_ms + WINDOW_MS
@@ -64,29 +68,7 @@ async def schedule_windows_for_progress(
         )
         session.add(window)
         await session.flush()
-        job = AnalysisJob(
-            id=uuid7(),
-            organization_id=stream.organization_id,
-            stream_session_id=stream.id,
-            analysis_window_id=window.id,
-            kind=AnalysisJobKind.TRANSCRIPTION,
-            status=JobStatus.QUEUED,
-        )
-        session.add(job)
-        await session.flush()
-        await enqueue(
-            session,
-            "analysis.transcribe",
-            {
-                "job_id": str(job.id),
-                "window_id": str(window.id),
-                "session_id": str(stream.id),
-            },
-            idempotency_key=f"analysis.transcribe:{job.id}",
-            organization_id=stream.organization_id,
-            queue="analysis",
-        )
-        created.append(job)
+        created.append(window)
     return created
 
 

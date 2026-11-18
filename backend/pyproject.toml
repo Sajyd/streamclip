@@ -66,6 +66,7 @@ ignore = [
 "app/cli.py" = ["T20"]
 # FFmpeg argv is built from trusted local paths / fixed flags, not shell input.
 "app/services/media_ffmpeg.py" = ["S603"]
+"app/services/ingest_onbox_analyze.py" = ["S603"]
 # Enum member names and the "token_type" field contain the word, not a secret.
 "app/models/enums.py" = ["S105"]
 "app/schemas/api.py" = ["S105"]

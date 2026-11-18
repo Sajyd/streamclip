@@ -9,7 +9,7 @@ logLevel: info
 logDestinations: [stdout]
 
 # 1080p60 + HLS remux + segment ffmpeg reader: large write queue (power of 2).
-writeQueueSize: 8192
+writeQueueSize: 16384
 readTimeout: 60s
 writeTimeout: 60s
 
@@ -29,8 +29,8 @@ webrtc: no
 hls: yes
 hlsAddress: 127.0.0.1:8888
 hlsAlwaysRemux: yes
-hlsSegmentCount: 7
-hlsSegmentDuration: 1s
+hlsSegmentCount: 12
+hlsSegmentDuration: 2s
 rtsp: no
 
 pathDefaults:

@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # --- Ingest (edge RTMP + per-org dedicated compute spots) ---------------
     # OBS: one stable URL (INGEST_RTMPS_URL / rtmp://INGEST_PUBLIC_HOST:1935/live)
     # + stream key. Edge MediaMTX auths via API, then relays to the org's
-    # dedicated t4g.small spot which runs the 5-min analysis loop.
+    # dedicated t4g.medium spot which runs the 5-min analysis loop.
     ingest_hook_secret: SecretStr | None = None
     ingest_api_auth_url: str | None = None
     ingest_api_event_url: str | None = None
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     ingest_ec2_subnet_id: str | None = None
     ingest_ec2_security_group_id: str | None = None
     ingest_ec2_instance_profile: str | None = None
-    ingest_ec2_instance_type: str = "t4g.small"
+    ingest_ec2_instance_type: str = "t4g.medium"
     ingest_ec2_region: str | None = None
     ingest_srt_url: str | None = None
     # Shared edge host shown to every user in OBS (required for ingest_online).

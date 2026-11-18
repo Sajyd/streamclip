@@ -87,7 +87,7 @@ class H(BaseHTTPRequestHandler):
         if not sub or ".." in sub or not SAFE.match(sub):
             self.send_response(404); self.end_headers(); return
         try:
-            with urllib.request.urlopen(f"{UPSTREAM.rstrip('/')}/{sub}", timeout=8) as r:
+            with urllib.request.urlopen(f"{UPSTREAM.rstrip('/')}/{sub}", timeout=20) as r:
                 data = r.read()
                 ct = r.headers.get("Content-Type") or "application/octet-stream"
             self.send_response(200)
@@ -297,8 +297,8 @@ while i < len(lines):
         out.extend([
             "hlsAddress: 127.0.0.1:8888",
             "hlsAlwaysRemux: yes",
-            "hlsSegmentCount: 7",
-            "hlsSegmentDuration: 1s",
+            "hlsSegmentCount: 12",
+            "hlsSegmentDuration: 2s",
         ])
         continue
     out.append(line)
@@ -313,8 +313,8 @@ if not any(l.startswith("hls:") for l in out):
                 "hls: yes",
                 "hlsAddress: 127.0.0.1:8888",
                 "hlsAlwaysRemux: yes",
-                "hlsSegmentCount: 7",
-                "hlsSegmentDuration: 1s",
+                "hlsSegmentCount: 12",
+                "hlsSegmentDuration: 2s",
             ])
             inserted = True
         final.append(l)
@@ -394,7 +394,7 @@ if [ -f /etc/mediamtx/mediamtx.yml ]; then
   else
     AUTH_LINE=$(grep -E '^authHTTPAddress:' /etc/mediamtx/mediamtx.yml | head -1 || true)
     [ -n "${{AUTH_LINE:-}}" ] || AUTH_LINE='authHTTPAddress: http://127.0.0.1/'
-    python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\\nwriteQueueSize: 8192\\nreadTimeout: 60s\\nwriteTimeout: 60s\\nrtmp: yes\\nrtmpAddress: :1935\\nsrt: yes\\nsrtAddress: :8890\\nwebrtc: no\\nhls: yes\\nhlsAddress: 127.0.0.1:8888\\nhlsAlwaysRemux: yes\\nhlsSegmentCount: 7\\nhlsSegmentDuration: 1s\\nrtsp: yes\\nrtspAddress: :8554\\nauthMethod: http\\n"+auth+"\\npathDefaults:\\n  record: no\\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\\npaths:\\n  all_others:\\n")' "$AUTH_LINE"
+    python3 -c 'import pathlib,sys; auth=sys.argv[1]; pathlib.Path("/etc/mediamtx/mediamtx.yml").write_text("logLevel: info\\nwriteQueueSize: 16384\\nreadTimeout: 60s\\nwriteTimeout: 60s\\nrtmp: yes\\nrtmpAddress: :1935\\nsrt: yes\\nsrtAddress: :8890\\nwebrtc: no\\nhls: yes\\nhlsAddress: 127.0.0.1:8888\\nhlsAlwaysRemux: yes\\nhlsSegmentCount: 12\\nhlsSegmentDuration: 2s\\nrtsp: yes\\nrtspAddress: :8554\\nauthMethod: http\\n"+auth+"\\npathDefaults:\\n  record: no\\n  runOnReady: /usr/local/bin/streamclip-on-ready $MTX_PATH\\n  runOnNotReady: /usr/local/bin/streamclip-on-not-ready $MTX_PATH\\npaths:\\n  all_others:\\n")' "$AUTH_LINE"
     systemctl restart mediamtx || true
   fi
 fi

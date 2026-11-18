@@ -351,7 +351,7 @@ async def _fetch_hls(
     headers: dict[str, str],
 ) -> httpx.Response:
     url = agent_hls_url(host, stream_path, file_path=file_path, token=token)
-    async with httpx.AsyncClient(timeout=8.0) as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url, headers=headers)
         # MediaMTX: index.m3u8 (master) may 404 briefly; stream.m3u8 is the media playlist.
         if response.status_code == 404 and file_path.rstrip("/").endswith("index.m3u8"):

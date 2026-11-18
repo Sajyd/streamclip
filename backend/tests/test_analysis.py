@@ -9,12 +9,13 @@ from sqlalchemy import select
 
 from app.context import AppContext
 from app.core import release
+from app.core.ids import uuid7
 from app.models.analysis import AnalysisJob, AnalysisWindow
-from app.models.enums import JobStatus, WindowStatus
+from app.models.enums import AnalysisJobKind, JobStatus, WindowStatus
 from app.models.media import StreamSession
 from app.services import ingest as ingest_service
 from app.services.analysis import WINDOW_MS
-from app.tasks.queue import run_due_tasks
+from app.tasks.queue import enqueue, run_due_tasks
 from tests.helpers import API, register
 
 HOOK_SECRET = "ingest-hook-analysis-secret-32bxx"
@@ -30,7 +31,7 @@ def _configure_ingest(ctx: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx.settings.ingest_hook_secret = None
 
 
-async def test_analyzed_progress_opens_window_and_skips_without_audio(
+async def test_analyzed_progress_opens_window_without_api_transcribe(
     client: httpx.AsyncClient, ctx: AppContext
 ) -> None:
     account = await register(client, email="analysis@example.com")
@@ -68,7 +69,8 @@ async def test_analyzed_progress_opens_window_and_skips_without_audio(
         windows_before = list((await session.execute(select(AnalysisWindow))).scalars())
     assert windows_before == []
 
-    # Successful segment analysis advances processed_ms → schedule windows.
+    # A billed segment opens a window. ASR/Luna run on the EC2, so no
+    # analysis.transcribe task is queued for the API worker.
     async with ctx.db.system_tx() as session:
         stream = (
             await session.execute(
@@ -78,6 +80,49 @@ async def test_analyzed_progress_opens_window_and_skips_without_audio(
         await ingest_service.record_processed_tick(
             session, stream, processed_ms=WINDOW_MS, media_end_ms=WINDOW_MS
         )
+
+    from app.models.system import Task
+
+    async with ctx.db.system_tx() as session:
+        windows = list((await session.execute(select(AnalysisWindow))).scalars())
+        jobs = list((await session.execute(select(AnalysisJob))).scalars())
+        tasks = list(
+            (
+                await session.execute(select(Task).where(Task.kind == "analysis.transcribe"))
+            ).scalars()
+        )
+
+    assert len(windows) == 1
+    assert windows[0].sequence == 0
+    assert windows[0].start_ms == 0
+    assert windows[0].end_ms == WINDOW_MS
+    assert windows[0].status is WindowStatus.QUEUED
+    assert jobs == []
+    assert tasks == []
+
+    # A leftover queued transcribe must not downgrade a window Luna already filled.
+    async with ctx.db.system_tx() as session:
+        window = (await session.execute(select(AnalysisWindow))).scalar_one()
+        window.status = WindowStatus.ANALYZED
+        job = AnalysisJob(
+            id=uuid7(),
+            organization_id=window.organization_id,
+            stream_session_id=window.stream_session_id,
+            analysis_window_id=window.id,
+            kind=AnalysisJobKind.TRANSCRIPTION,
+            status=JobStatus.QUEUED,
+        )
+        session.add(job)
+        await session.flush()
+        await enqueue(
+            session,
+            "analysis.transcribe",
+            {"job_id": str(job.id), "window_id": str(window.id)},
+            queue="analysis",
+            organization_id=window.organization_id,
+            idempotency_key=f"analysis.transcribe:{job.id}",
+        )
+        job_id = job.id
 
     await run_due_tasks(
         ctx,
@@ -89,14 +134,9 @@ async def test_analyzed_progress_opens_window_and_skips_without_audio(
     )
 
     async with ctx.db.system_tx() as session:
-        windows = list((await session.execute(select(AnalysisWindow))).scalars())
-        jobs = list((await session.execute(select(AnalysisJob))).scalars())
-
-    assert len(windows) == 1
-    assert windows[0].sequence == 0
-    assert windows[0].start_ms == 0
-    assert windows[0].end_ms == WINDOW_MS
-    assert windows[0].status is WindowStatus.SKIPPED
-    assert len(jobs) == 1
-    assert jobs[0].status is JobStatus.SKIPPED
-    assert jobs[0].error_code == "no_media_segment"
+        window = (await session.execute(select(AnalysisWindow))).scalar_one()
+        job = await session.get(AnalysisJob, job_id)
+    assert window.status is WindowStatus.ANALYZED
+    assert job is not None
+    assert job.status is JobStatus.SKIPPED
+    assert job.error_code == "onbox_pipeline"

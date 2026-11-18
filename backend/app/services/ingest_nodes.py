@@ -1,4 +1,4 @@
-"""Dedicated compute EC2 nodes (t4g.small spot), one public IP per live.
+"""Dedicated compute EC2 nodes (t4g.medium spot), one public IP per live.
 
 OBS publishes straight to that spot (`rtmp://<ip>:1935/live`). A second live
 gets another instance. The shared edge is not the media path.
@@ -266,7 +266,7 @@ def _fresh_node(
             or settings.bedrock_region
             or "eu-north-1"
         ),
-        instance_type=settings.ingest_ec2_instance_type or "t4g.small",
+        instance_type=settings.ingest_ec2_instance_type or "t4g.medium",
         public_hostname=None,
         capacity_streams=1,
         active_streams=0,
