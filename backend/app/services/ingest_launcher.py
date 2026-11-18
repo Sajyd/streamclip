@@ -478,7 +478,7 @@ systemctl enable --now mediamtx
             kwargs.pop("SecurityGroupIds", None)
             if settings.ingest_ec2_instance_profile:
                 kwargs["IamInstanceProfile"] = {"Name": settings.ingest_ec2_instance_profile}
-            response = client.run_instances(**kwargs)
+            response = self._run_instances_with_failover(client, kwargs)
             instance = response["Instances"][0]
             instance_id = instance["InstanceId"]
             waiter = client.get_waiter("instance_running")
@@ -497,6 +497,83 @@ systemctl enable --now mediamtx
             return LaunchResult(instance_id=instance_id, public_hostname=public_ip)
 
         return await asyncio.to_thread(_run)
+
+    def _candidate_subnets(self, client, primary: str) -> list[str]:
+        """Public subnets in the configured VPC. Primary AZ first, then the others.
+
+        eu-north-1b often has no t4g.small capacity; 1a and 1c do.
+        """
+        try:
+            described = client.describe_subnets(SubnetIds=[primary])["Subnets"][0]
+            vpc_id = described["VpcId"]
+            found = client.describe_subnets(
+                Filters=[
+                    {"Name": "vpc-id", "Values": [vpc_id]},
+                    {"Name": "map-public-ip-on-launch", "Values": ["true"]},
+                ]
+            )["Subnets"]
+        except Exception as exc:  # noqa: BLE001 — fall back to the configured subnet
+            log.warning("ingest_subnet_lookup_failed", error=str(exc)[:200])
+            return [primary]
+        rest = [
+            row["SubnetId"]
+            for row in sorted(found, key=lambda row: row.get("AvailabilityZone") or "")
+            if row["SubnetId"] != primary
+        ]
+        return [primary, *rest]
+
+    def _run_instances_with_failover(self, client, kwargs: dict) -> dict:
+        """Try spot, then on-demand, across AZs when one zone has no capacity."""
+        from botocore.exceptions import ClientError
+
+        primary = kwargs["NetworkInterfaces"][0]["SubnetId"]
+        subnets = self._candidate_subnets(client, primary)
+        capacity_codes = {
+            "InsufficientInstanceCapacity",
+            "InsufficientFreeAddressesInSubnet",
+            "MaxSpotInstanceCountExceeded",
+            "SpotMaxPriceTooLow",
+        }
+        last_error: Exception | None = None
+        for spot in (True, False):
+            for subnet_id in subnets:
+                params = {
+                    **kwargs,
+                    "NetworkInterfaces": [
+                        {**kwargs["NetworkInterfaces"][0], "SubnetId": subnet_id}
+                    ],
+                }
+                if spot:
+                    params["InstanceMarketOptions"] = {
+                        "MarketType": "spot",
+                        "SpotOptions": {"InstanceInterruptionBehavior": "terminate"},
+                    }
+                else:
+                    params.pop("InstanceMarketOptions", None)
+                try:
+                    response = client.run_instances(**params)
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    if code not in capacity_codes:
+                        raise
+                    last_error = exc
+                    log.warning(
+                        "ingest_spot_capacity_retry",
+                        subnet_id=subnet_id,
+                        spot=spot,
+                        code=code,
+                    )
+                    continue
+                log.info(
+                    "ingest_instance_launched",
+                    subnet_id=subnet_id,
+                    spot=spot,
+                    instance_id=response["Instances"][0]["InstanceId"],
+                )
+                return response
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No subnet available for the ingest instance")
 
     async def terminate(self, *, instance_id: str) -> None:
         def _run() -> None:
