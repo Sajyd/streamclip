@@ -117,3 +117,29 @@ async def cron_maintenance(request: Request, ctx: Ctx) -> dict[str, Any]:
         time_budget_seconds=50.0,
     )
     return {"status": "ok", "tasks": summary}
+
+
+@router.post("/internal/cron/repair-preview", dependencies=[Depends(require_cron_secret)])
+async def cron_repair_preview(ctx: Ctx) -> dict[str, Any]:
+    """Open SG :8080 and (re)install edge/dedicated HLS proxies for live preview."""
+    from app.models.enums import IngestNodeStatus
+    from app.models.media import IngestNode
+    from app.services.preview_network import repair_preview_network
+    from sqlalchemy import select
+
+    dedicated_id: str | None = None
+    async with ctx.db.system_tx() as session:
+        node = (
+            await session.execute(
+                select(IngestNode)
+                .where(IngestNode.status == IngestNodeStatus.READY)
+                .order_by(IngestNode.launched_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if node is not None:
+            dedicated_id = node.instance_id
+    result = repair_preview_network(
+        ctx.settings, dedicated_instance_id=dedicated_id, force=True
+    )
+    return {"status": "ok", "repair": result}

@@ -1,8 +1,8 @@
-"""Live preview: resolve dedicated-node HLS via the on-box agent (:8080).
+"""Live preview: HLS via edge (preferred) or dedicated agent (:8080).
 
-Browsers cannot play RTMP. MediaMTX remuxes to HLS on localhost; the analysis
-agent proxies `/hls/…` on the already-open :8080. The API authenticates the
-caller (user or staff), then either returns metadata or proxies bytes.
+Browsers cannot play RTMP. OBS publishes to the shared edge; MediaMTX remuxes
+to localhost HLS and a small proxy on :8080 serves it. Dedicated spots keep the
+same shape as a fallback. The API authenticates the caller, then proxies bytes.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from app.models.enums import StreamKeyStatus, StreamSessionStatus
 from app.models.media import StreamKey, StreamSession
 from app.services import ingest_nodes
 from app.services.auth import Principal
+from app.services.preview_network import edge_preview_host, schedule_repair
 
 log = structlog.get_logger(__name__)
 
@@ -262,6 +263,37 @@ def info_to_dict(info: PlaybackInfo, settings: Settings) -> dict[str, Any]:
     }
 
 
+def _preview_hosts(
+    settings: Settings, *, dedicated_host: str | None
+) -> list[str]:
+    """Prefer the shared edge (OBS lands there); fall back to the org spot."""
+    hosts: list[str] = []
+    edge = edge_preview_host(settings)
+    if edge:
+        hosts.append(edge)
+    if dedicated_host and dedicated_host not in hosts:
+        hosts.append(dedicated_host)
+    return hosts
+
+
+async def _fetch_hls(
+    *,
+    host: str,
+    public_id: str,
+    file_path: str,
+    token: str | None,
+    headers: dict[str, str],
+) -> httpx.Response:
+    url = agent_hls_url(host, public_id, file_path=file_path, token=token)
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        response = await client.get(url, headers=headers)
+        # MediaMTX: index.m3u8 (master) may 404 briefly; stream.m3u8 is the media playlist.
+        if response.status_code == 404 and file_path.rstrip("/").endswith("index.m3u8"):
+            alt = agent_hls_url(host, public_id, file_path="stream.m3u8", token=token)
+            response = await client.get(alt, headers=headers)
+        return response
+
+
 async def proxy_hls(
     ctx: AppContext,
     info: PlaybackInfo,
@@ -270,6 +302,8 @@ async def proxy_hls(
 ) -> tuple[bytes, str]:
     if not info.preview_available or not info.public_id:
         raise ServiceUnavailableError(info.message, code="preview_unavailable")
+    dedicated_host: str | None = None
+    dedicated_instance_id: str | None = None
     async with ctx.db.system_tx() as session:
         node = await ingest_nodes.get_dedicated_node(session, info.organization_id)
         if node is None and info.session_id:
@@ -278,37 +312,83 @@ async def proxy_hls(
                 from app.models.media import IngestNode
 
                 node = await session.get(IngestNode, stream.ingest_node_id)
-    host = node.public_hostname if node and node.status.value == "ready" else None
-    if not host:
+        if node and node.status.value == "ready":
+            dedicated_host = node.public_hostname
+            dedicated_instance_id = node.instance_id
+
+    hosts = _preview_hosts(ctx.settings, dedicated_host=dedicated_host)
+    if not hosts:
         raise ServiceUnavailableError("Instance dédiée hors ligne.", code="preview_unavailable")
 
     token = mint_preview_token(ctx.settings, public_id=info.public_id)
-    url = agent_hls_url(host, info.public_id, file_path=file_path, token=token)
     headers: dict[str, str] = {}
     if ctx.settings.ingest_hook_secret is not None:
         headers["X-Streamclip-Ingest-Secret"] = (
             ctx.settings.ingest_hook_secret.get_secret_value()
         )
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(url, headers=headers)
-            # MediaMTX: index.m3u8 (master) may 404 briefly; stream.m3u8 is the media playlist.
-            if (
-                response.status_code == 404
-                and file_path.rstrip("/").endswith("index.m3u8")
-            ):
-                alt = agent_hls_url(
-                    host, info.public_id, file_path="stream.m3u8", token=token
-                )
-                response = await client.get(alt, headers=headers)
-    except httpx.HTTPError as exc:
-        log.warning("playback.proxy_failed", error=str(exc), host=host)
+
+    last_error: Exception | None = None
+    response: httpx.Response | None = None
+    used_host: str | None = None
+    for host in hosts:
+        try:
+            response = await _fetch_hls(
+                host=host,
+                public_id=info.public_id,
+                file_path=file_path,
+                token=token,
+                headers=headers,
+            )
+            used_host = host
+            if response.status_code < 500:
+                break
+            log.warning(
+                "playback.proxy_bad_status",
+                status=response.status_code,
+                host=host,
+                path=file_path,
+            )
+        except httpx.HTTPError as exc:
+            last_error = exc
+            log.warning("playback.proxy_failed", error=str(exc), host=host)
+            continue
+
+    if response is None:
+        schedule_repair(ctx.settings, dedicated_instance_id=dedicated_instance_id)
         raise ServiceUnavailableError(
             "Aperçu temporairement indisponible.", code="preview_unavailable"
-        ) from exc
-    if response.status_code == 401 or response.status_code == 403:
+        ) from last_error
+
+    if response.status_code >= 500 or (
+        response.status_code in {401, 403, 404} and used_host == hosts[0] and len(hosts) > 1
+    ):
+        # Edge missing proxy / not ready yet → heal in background and try dedicated.
+        schedule_repair(ctx.settings, dedicated_instance_id=dedicated_instance_id)
+        if used_host == hosts[0] and len(hosts) > 1:
+            try:
+                response = await _fetch_hls(
+                    host=hosts[1],
+                    public_id=info.public_id,
+                    file_path=file_path,
+                    token=token,
+                    headers=headers,
+                )
+                used_host = hosts[1]
+            except httpx.HTTPError as exc:
+                last_error = exc
+                log.warning("playback.proxy_failed", error=str(exc), host=hosts[1])
+
+    if response is None or response.status_code >= 500:
+        schedule_repair(ctx.settings, dedicated_instance_id=dedicated_instance_id)
+        raise ServiceUnavailableError(
+            "Aperçu temporairement indisponible.", code="preview_unavailable"
+        ) from last_error
+
+    if response.status_code in {401, 403}:
         raise PermissionDeniedError("Aperçu non autorisé.", code="preview_forbidden")
     if response.status_code == 404:
+        # First failure often means edge HLS not installed yet — kick repair.
+        schedule_repair(ctx.settings, dedicated_instance_id=dedicated_instance_id)
         raise NotFoundError(
             "Flux HLS introuvable — le live vient peut-être de démarrer.",
             code="preview_not_found",
@@ -317,9 +397,10 @@ async def proxy_hls(
         log.warning(
             "playback.proxy_bad_status",
             status=response.status_code,
-            host=host,
+            host=used_host,
             path=file_path,
         )
+        schedule_repair(ctx.settings, dedicated_instance_id=dedicated_instance_id)
         raise ServiceUnavailableError(
             "Aperçu temporairement indisponible.", code="preview_unavailable"
         )
@@ -338,7 +419,11 @@ async def proxy_hls(
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#"):
                     path_only = stripped.split("?", 1)[0]
-                    if path_only.startswith("http://") or path_only.startswith("https://") or path_only.startswith("/"):
+                    if (
+                        path_only.startswith("http://")
+                        or path_only.startswith("https://")
+                        or path_only.startswith("/")
+                    ):
                         line = path_only.rsplit("/", 1)[-1]
                 lines.append(line)
             body = "\n".join(lines).encode("utf-8")

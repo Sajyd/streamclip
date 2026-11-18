@@ -255,7 +255,12 @@ locals {
     srt: yes
     srtAddress: :8890
     webrtc: no
-    hls: no
+    # Local HLS for dashboard preview (proxied on :8080; not public).
+    hls: yes
+    hlsAddress: 127.0.0.1:8888
+    hlsAlwaysRemux: yes
+    hlsSegmentCount: 7
+    hlsSegmentDuration: 1s
     rtsp: yes
     rtspAddress: :8554
     authMethod: http
@@ -267,6 +272,63 @@ locals {
       all_others:
     YAML
     sed -i 's/^    //' /etc/mediamtx/mediamtx.yml
+
+    cat > /usr/local/bin/streamclip-edge-hls.py <<'PROXY'
+    #!/usr/bin/env python3
+    import hashlib, hmac, os, re, time, urllib.error, urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
+    PORT = int(os.environ.get("STREAMCLIP_HLS_PORT", "8080"))
+    UPSTREAM = os.environ.get("STREAMCLIP_HLS_UPSTREAM", "http://127.0.0.1:8888")
+    SAFE = re.compile(r"^[A-Za-z0-9._/\\-]+$")
+    HOOK = (os.environ.get("HOOK") or "").strip()
+    def _ok(handler, q):
+        if not HOOK: return True
+        h = (handler.headers.get("X-Streamclip-Ingest-Secret") or "").strip()
+        if h and hmac.compare_digest(h, HOOK): return True
+        tok = (q.get("token") or [None])[0]
+        if not tok or not str(tok).startswith("pb."): return False
+        parts = str(tok).split(".")
+        if len(parts) != 4: return False
+        _, pid, exp_s, sig = parts
+        try: exp = int(exp_s)
+        except ValueError: return False
+        if exp < int(time.time()): return False
+        expect = hmac.new(HOOK.encode(), f"{pid}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+        return hmac.compare_digest(sig, expect)
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *_a): return
+        def do_GET(self):
+            u = urlparse(self.path); q = parse_qs(u.query)
+            if u.path in ("/health", "/"):
+                b = b'{"ok":true,"service":"edge-hls"}'
+                self.send_response(200); self.send_header("Content-Type","application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
+            if not u.path.startswith("/hls/"):
+                self.send_response(404); self.end_headers(); return
+            if not _ok(self, q):
+                self.send_response(401); self.end_headers(); return
+            sub = u.path[len("/hls/"):]
+            if not sub or ".." in sub or not SAFE.match(sub):
+                self.send_response(404); self.end_headers(); return
+            try:
+                with urllib.request.urlopen(f"{UPSTREAM.rstrip('/')}/{sub}", timeout=8) as r:
+                    data = r.read(); ct = r.headers.get("Content-Type") or "application/octet-stream"
+                self.send_response(200); self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control","no-store")
+                self.end_headers(); self.wfile.write(data)
+            except urllib.error.HTTPError as e:
+                body = e.read() if e.fp else b""
+                self.send_response(e.code); self.send_header("Content-Length", str(len(body)))
+                self.end_headers(); self.wfile.write(body)
+            except Exception:
+                self.send_response(502); self.end_headers()
+    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+    PROXY
+    sed -i 's/^    //' /usr/local/bin/streamclip-edge-hls.py
+    chmod +x /usr/local/bin/streamclip-edge-hls.py
+    mkdir -p /etc/streamclip
+    printf 'HOOK=%s\n' "$HOOK" > /etc/streamclip/edge-hls.env
 
     cat > /etc/systemd/system/mediamtx.service <<'UNIT'
     [Unit]
@@ -282,10 +344,27 @@ locals {
     WantedBy=multi-user.target
     UNIT
     sed -i 's/^    //' /etc/systemd/system/mediamtx.service
+
+    cat > /etc/systemd/system/streamclip-edge-hls.service <<'UNIT'
+    [Unit]
+    Description=STREAMCLIP edge HLS preview (:8080)
+    After=network-online.target mediamtx.service
+    Wants=network-online.target
+    [Service]
+    Type=simple
+    EnvironmentFile=-/etc/streamclip/edge-hls.env
+    ExecStart=/usr/bin/python3 /usr/local/bin/streamclip-edge-hls.py
+    Restart=always
+    RestartSec=2
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+    sed -i 's/^    //' /etc/systemd/system/streamclip-edge-hls.service
     systemctl daemon-reload
     systemctl enable --now mediamtx
+    systemctl enable --now streamclip-edge-hls
     sleep 2
-    ss -lntp | grep 1935 > /dev/console || true
+    ss -lntp | grep -E '1935|8080' > /dev/console || true
   EOF
 }
 
