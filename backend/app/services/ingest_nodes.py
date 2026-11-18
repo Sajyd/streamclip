@@ -327,6 +327,7 @@ async def _provision_node(
     details = _details(node)
     details.pop("terminate_after", None)
     details.pop("launch_error", None)
+    details.pop("lost_reason", None)
     details.pop("starting_since", None)
     node.details = details
     await session.flush()
@@ -499,6 +500,67 @@ async def resolve_for_organization(
 
     if node.status is IngestNodeStatus.READY and node.public_hostname:
         host = node.public_hostname
+        if node.instance_id:
+            try:
+                view = await get_launcher(settings).describe_instance(
+                    instance_id=node.instance_id
+                )
+            except Exception as exc:  # noqa: BLE001 — do not hand out an unverified host
+                log.warning(
+                    "ingest_spot_describe_failed",
+                    instance_id=node.instance_id,
+                    error=str(exc)[:200],
+                )
+                return ResolveResult(
+                    status="starting",
+                    ingest_api_url=api,
+                    rtmp_url=None,
+                    analysis_url=None,
+                    public_hostname=None,
+                    node_id=node.id,
+                    message="Vérification de l'instance en cours. Réessayez dans quelques secondes.",
+                )
+            if not view.usable:
+                log.warning(
+                    "ingest_spot_not_running",
+                    instance_id=node.instance_id,
+                    state=view.state,
+                    host=host,
+                )
+                node.status = IngestNodeStatus.LOST
+                node.public_hostname = None
+                node.terminated_at = datetime.now(UTC)
+                details = _details(node)
+                details["lost_reason"] = view.state
+                node.details = details
+                await session.flush()
+                try:
+                    await ensure_dedicated_node(
+                        session,
+                        settings,
+                        organization_id=organization_id,
+                        start=True,
+                        additional=new_server,
+                    )
+                except PermissionDeniedError:
+                    raise
+                except Exception:
+                    return ResolveResult(
+                        status="unavailable",
+                        ingest_api_url=api,
+                        rtmp_url=None,
+                        analysis_url=None,
+                        public_hostname=None,
+                        node_id=None,
+                        message="Impossible de démarrer votre instance d'ingestion. Réessayez.",
+                    )
+                return await resolve_for_organization(
+                    session, settings, organization_id=organization_id, new_server=new_server
+                )
+            if view.public_hostname and view.public_hostname != host:
+                node.public_hostname = view.public_hostname
+                host = view.public_hostname
+                await session.flush()
         # MediaMTX may still be installing — keep "starting" until :1935 accepts.
         # Skip TCP probe for fake/local hosts used in tests.
         probe = settings.environment not in ("test", "local") or not host.endswith(

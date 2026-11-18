@@ -155,6 +155,61 @@ async def test_relay_relaunches_spot_after_idle_terminate(
         assert node.public_hostname is not None
 
 
+async def test_relay_replaces_a_spot_aws_already_terminated(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    """A ready row whose EC2 instance is gone must not be handed to the edge."""
+    from sqlalchemy import select
+
+    from app.models.enums import IngestNodeStatus
+    from app.models.media import IngestNode
+
+    account = await register(client, email="ingest-dead-spot@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id = issued["public_id"]
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+
+    first = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": f"live/{public_id}/sc_live_dead"},
+        headers=hook,
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "ready"
+
+    async with ctx.db.system_tx() as session:
+        node = (
+            await session.execute(
+                select(IngestNode).where(IngestNode.name == f"dedicated-{account.organization_id}")
+            )
+        ).scalar_one()
+        node.instance_id = "i-dead-not-in-aws"
+        node.public_hostname = "203.0.113.10"
+        node.status = IngestNodeStatus.READY
+        await session.flush()
+
+    second = await client.get(
+        f"{API}/ingest/hooks/relay-target",
+        params={"path": f"live/{public_id}/sc_live_dead"},
+        headers=hook,
+    )
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "ready"
+    assert "203.0.113.10" not in (body["rtmp_push_url"] or "")
+    assert ".ingest.test" in body["rtmp_push_url"]
+
+    async with ctx.db.system_tx() as session:
+        node = (
+            await session.execute(
+                select(IngestNode).where(IngestNode.name == f"dedicated-{account.organization_id}")
+            )
+        ).scalar_one()
+        assert node.status is IngestNodeStatus.READY
+        assert node.public_hostname != "203.0.113.10"
+        assert node.instance_id != "i-dead-not-in-aws"
+
+
 async def test_second_live_gets_a_different_spot(
     client: httpx.AsyncClient, ctx: AppContext
 ) -> None:

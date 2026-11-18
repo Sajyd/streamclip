@@ -29,10 +29,24 @@ class LaunchResult:
     public_hostname: str
 
 
+@dataclass(frozen=True, slots=True)
+class InstanceView:
+    """Live EC2 state. `missing` means AWS no longer has this instance id."""
+
+    state: str
+    public_hostname: str | None
+
+    @property
+    def usable(self) -> bool:
+        return self.state in {"pending", "running"}
+
+
 class SpotLauncher(Protocol):
     async def launch(self, *, organization_id: uuid.UUID, node_name: str) -> LaunchResult: ...
 
     async def terminate(self, *, instance_id: str) -> None: ...
+
+    async def describe_instance(self, *, instance_id: str) -> InstanceView: ...
 
 
 class FakeSpotLauncher:
@@ -54,6 +68,12 @@ class FakeSpotLauncher:
 
     async def terminate(self, *, instance_id: str) -> None:
         self.launched.pop(instance_id, None)
+
+    async def describe_instance(self, *, instance_id: str) -> InstanceView:
+        host = self.launched.get(instance_id)
+        if host is None:
+            return InstanceView(state="missing", public_hostname=None)
+        return InstanceView(state="running", public_hostname=host)
 
 
 class AwsSpotLauncher:
@@ -585,6 +605,31 @@ systemctl enable --now mediamtx
 
         await asyncio.to_thread(_run)
         log.info("ingest_spot_terminated", instance_id=instance_id)
+
+    async def describe_instance(self, *, instance_id: str) -> InstanceView:
+        """Ask EC2 whether this spot still exists. A DB row is not enough."""
+
+        def _run() -> InstanceView:
+            from botocore.exceptions import ClientError
+
+            try:
+                described = self._client().describe_instances(InstanceIds=[instance_id])
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in {"InvalidInstanceID.NotFound", "InvalidInstanceID.Malformed"}:
+                    return InstanceView(state="missing", public_hostname=None)
+                raise
+            reservations = described.get("Reservations") or []
+            if not reservations or not reservations[0].get("Instances"):
+                return InstanceView(state="missing", public_hostname=None)
+            instance = reservations[0]["Instances"][0]
+            state = (instance.get("State") or {}).get("Name") or "unknown"
+            return InstanceView(
+                state=state,
+                public_hostname=instance.get("PublicIpAddress"),
+            )
+
+        return await asyncio.to_thread(_run)
 
 
 _FAKE = FakeSpotLauncher()
