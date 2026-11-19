@@ -9,12 +9,15 @@ type Props = {
   mediaUrlAction: (id: string) => Promise<{ url?: string; error?: string }>;
   /** Free plan → Remotion watermark. */
   showWatermark?: boolean;
+  /** Highlights page only: per-clip height or width framing. */
+  layoutControl?: boolean;
 };
 
 export function HighlightsGallery({
   highlights,
   mediaUrlAction,
   showWatermark = false,
+  layoutControl = false,
 }: Props) {
   if (highlights.length === 0) {
     return (
@@ -36,6 +39,7 @@ export function HighlightsGallery({
           highlight={h}
           mediaUrlAction={mediaUrlAction}
           showWatermark={showWatermark}
+          layoutControl={layoutControl}
         />
       ))}
     </div>

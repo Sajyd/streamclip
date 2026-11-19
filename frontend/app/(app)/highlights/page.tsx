@@ -21,6 +21,7 @@ async function HighlightsContent() {
       highlights={highlights}
       mediaUrlAction={highlightMediaUrlAction}
       showWatermark={!overview.is_paid}
+      layoutControl
     />
   );
 }

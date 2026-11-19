@@ -3,7 +3,7 @@
 import { Player } from "@remotion/player";
 import { useEffect, useMemo, useState } from "react";
 
-import { ViralHighlight, COMPOSITION } from "@/remotion/ViralHighlight";
+import { ViralHighlight, COMPOSITION, type GameplayFit } from "@/remotion/ViralHighlight";
 import type { Highlight } from "@/types/api";
 import { buttonClasses } from "@/components/ui/button";
 import { Badge, Card, CardDescription, CardTitle } from "@/components/ui/primitives";
@@ -13,12 +13,22 @@ type Props = {
   mediaUrlAction: (id: string) => Promise<{ url?: string; error?: string }>;
   /** Watermark on free plans only. */
   showWatermark?: boolean;
+  /** Highlights page only: height vs width framing switch. */
+  layoutControl?: boolean;
 };
 
-export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = false }: Props) {
+const FIT_STORAGE = "streamclip.highlightFit.v1";
+
+export function HighlightPlayer({
+  highlight,
+  mediaUrlAction,
+  showWatermark = false,
+  layoutControl = false,
+}: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fit, setFit] = useState<GameplayFit>("height");
 
   const durationInFrames = useMemo(() => {
     const ms = Math.max(1000, highlight.relative_end_ms - highlight.relative_start_ms);
@@ -43,6 +53,18 @@ export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = fal
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per highlight
   }, [highlight.id]);
+
+  useEffect(() => {
+    if (!layoutControl) return;
+    const stored = window.localStorage.getItem(`${FIT_STORAGE}.${highlight.id}`);
+    if (stored === "width" || stored === "height") setFit(stored);
+  }, [highlight.id, layoutControl]);
+
+  function toggleFit() {
+    const next: GameplayFit = fit === "height" ? "width" : "height";
+    setFit(next);
+    window.localStorage.setItem(`${FIT_STORAGE}.${highlight.id}`, next);
+  }
 
   return (
     <Card className="overflow-hidden">
@@ -74,6 +96,7 @@ export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = fal
               words: highlight.words,
               camera: highlight.camera,
               title: highlight.title,
+              gameplayFit: layoutControl ? fit : "height",
               showWatermark,
             }}
             durationInFrames={durationInFrames}
@@ -101,6 +124,29 @@ export function HighlightPlayer({ highlight, mediaUrlAction, showWatermark = fal
           </div>
         )}
       </div>
+      {layoutControl ? (
+        <div className="mt-3 flex items-center justify-end gap-2.5">
+          <span className="text-xs text-ink-300">
+            {fit === "height" ? "Cadrage hauteur" : "Cadrage largeur"}
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={fit === "width"}
+            aria-label="Cadrer le gameplay sur la largeur"
+            onClick={toggleFit}
+            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+              fit === "width" ? "bg-brand-500" : "bg-ink-700"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                fit === "width" ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
+      ) : null}
       {error ? <p className="mt-2 text-xs text-danger-400">{error}</p> : null}
     </Card>
   );

@@ -15,6 +15,8 @@ export type CameraFocus = {
   y: number;
 };
 
+export type GameplayFit = "height" | "width";
+
 export type ViralHighlightProps = {
   src: string;
   relativeStartMs: number;
@@ -22,6 +24,8 @@ export type ViralHighlightProps = {
   words: CaptionWord[];
   camera: CameraFocus;
   title: string;
+  /** How the gameplay pane is scaled. Height keeps the frame from cropping top and bottom. */
+  gameplayFit?: GameplayFit;
   /** Free accounts only — paid plans render without watermark. */
   showWatermark?: boolean;
 };
@@ -45,19 +49,54 @@ function activeWords(words: CaptionWord[], timeMs: number): CaptionWord[] {
   return words.filter((w) => w.start_ms <= timeMs && w.end_ms >= timeMs - 400);
 }
 
-function camTransform(camera: CameraFocus): CSSProperties {
-  const focusX = camera.x / SOURCE_W;
-  const focusY = camera.y / SOURCE_H;
-  const scale = Math.max(H / SOURCE_H, W / (SOURCE_W * 0.45));
-  const tx = 50 - focusX * 100;
-  const ty = 50 - focusY * 100;
+/** Inner size of each pane inside the 1080×1920 frame (padding 8, gap 8). */
+function paneBox(dual: boolean, which: "game" | "cam"): { w: number; h: number } {
+  if (!dual) return { w: W, h: H };
+  const innerH = H - 16 - 8;
+  const innerW = W - 16;
+  const h = innerH * (which === "game" ? 1.15 : 0.85) / 2;
+  return { w: innerW, h };
+}
+
+/** Crop around the detected facecam so that window fills the lower pane. */
+const CAM_CROP_W = 480;
+
+function cameraFrame(camera: CameraFocus): CSSProperties {
+  const pane = paneBox(true, "cam");
+  const aspect = pane.w / pane.h;
+  let cropW = CAM_CROP_W;
+  let cropH = cropW / aspect;
+  if (cropH > SOURCE_H) {
+    cropH = SOURCE_H;
+    cropW = cropH * aspect;
+  }
+  const left = Math.max(0, Math.min(SOURCE_W - cropW, camera.x - cropW / 2));
+  const top = Math.max(0, Math.min(SOURCE_H - cropH, camera.y - cropH / 2));
   return {
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    objectPosition: `${50 + tx * 0.35}% ${50 + ty * 0.35}%`,
-    transform: `scale(${Math.min(scale, 2.2)})`,
-    transformOrigin: `${focusX * 100}% ${focusY * 100}%`,
+    position: "absolute",
+    width: `${(SOURCE_W / cropW) * 100}%`,
+    height: `${(SOURCE_H / cropH) * 100}%`,
+    left: `${-(left / cropW) * 100}%`,
+    top: `${-(top / cropH) * 100}%`,
+    objectFit: "fill",
+    maxWidth: "none",
+    maxHeight: "none",
+  };
+}
+
+function gameplayStyle(fit: GameplayFit, dual: boolean): CSSProperties {
+  const pane = paneBox(dual, "game");
+  const scale = fit === "height" ? pane.h / SOURCE_H : pane.w / SOURCE_W;
+  return {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: SOURCE_W * scale,
+    height: SOURCE_H * scale,
+    transform: "translate(-50%, -50%)",
+    objectFit: "contain",
+    maxWidth: "none",
+    maxHeight: "none",
   };
 }
 
@@ -147,6 +186,7 @@ export const ViralHighlight: FC<ViralHighlightProps> = ({
   words,
   camera,
   title,
+  gameplayFit = "height",
   showWatermark = false,
 }) => {
   const frame = useCurrentFrame();
@@ -156,9 +196,27 @@ export const ViralHighlight: FC<ViralHighlightProps> = ({
   const dual = camera.detected;
   const durationFrames = Math.max(1, Math.round(((relativeEndMs - relativeStartMs) / 1000) * fps));
   const watermarkSeed = title.length * 97 + Math.round(relativeStartMs);
+  const startFrom = Math.round((relativeStartMs / 1000) * fps);
+  const endAt = Math.round((relativeEndMs / 1000) * fps);
+  const caption = captions.map((word) => word.text).join(" ");
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "#0a0a0b" }}>
+    <AbsoluteFill style={{ backgroundColor: "#010014", overflow: "hidden" }}>
+      <Video
+        src={src}
+        startFrom={startFrom}
+        endAt={endAt}
+        muted
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          filter: "blur(48px)",
+          transform: "scale(1.15)",
+        }}
+      />
       <Sequence from={0} durationInFrames={durationFrames}>
         <AbsoluteFill
           style={{
@@ -172,15 +230,16 @@ export const ViralHighlight: FC<ViralHighlightProps> = ({
             style={{
               flex: dual ? 1.15 : 1,
               position: "relative",
+              minHeight: 0,
               overflow: "hidden",
               borderRadius: dual ? 16 : 0,
             }}
           >
             <Video
               src={src}
-              startFrom={Math.round((relativeStartMs / 1000) * fps)}
-              endAt={Math.round((relativeEndMs / 1000) * fps)}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              startFrom={startFrom}
+              endAt={endAt}
+              style={gameplayStyle(gameplayFit, dual)}
             />
           </div>
           {dual ? (
@@ -188,29 +247,18 @@ export const ViralHighlight: FC<ViralHighlightProps> = ({
               style={{
                 flex: 0.85,
                 position: "relative",
+                minHeight: 0,
                 overflow: "hidden",
                 borderRadius: 16,
-                border: "1px solid rgba(255,255,255,0.12)",
               }}
             >
               <Video
                 src={src}
-                startFrom={Math.round((relativeStartMs / 1000) * fps)}
-                endAt={Math.round((relativeEndMs / 1000) * fps)}
-                style={camTransform(camera)}
+                startFrom={startFrom}
+                endAt={endAt}
+                muted
+                style={cameraFrame(camera)}
               />
-              <div
-                style={{
-                  position: "absolute",
-                  left: 12,
-                  top: 12,
-                  fontSize: 22,
-                  color: "rgba(255,255,255,0.7)",
-                  fontFamily: "system-ui, sans-serif",
-                }}
-              >
-                Cam streamer
-              </div>
             </div>
           ) : null}
         </AbsoluteFill>
@@ -218,44 +266,33 @@ export const ViralHighlight: FC<ViralHighlightProps> = ({
 
       {showWatermark ? <StreamclipWatermark frame={frame} fps={fps} seed={watermarkSeed} /> : null}
 
-      <AbsoluteFill
-        style={{
-          justifyContent: "flex-end",
-          padding: "48px 40px 80px",
-          background:
-            "linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.2) 40%, transparent 70%)",
-          pointerEvents: "none",
-        }}
-      >
-        <div
+      {caption ? (
+        <AbsoluteFill
           style={{
-            fontSize: 28,
-            fontWeight: 600,
-            color: "rgba(255,255,255,0.85)",
-            marginBottom: 16,
-            fontFamily: "system-ui, sans-serif",
-            textAlign: "center",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: "0 48px",
+            pointerEvents: "none",
           }}
         >
-          {title}
-        </div>
-        <div
-          style={{
-            minHeight: 88,
-            fontSize: CAPTION_SIZE,
-            fontWeight: 700,
-            lineHeight: 1.15,
-            color: "#fff",
-            textAlign: "center",
-            fontFamily: CAPTION_FONT,
-            WebkitTextStroke: `${CAPTION_STROKE}px #000`,
-            paintOrder: "stroke fill",
-            letterSpacing: "0.01em",
-          }}
-        >
-          {captions.map((w) => w.text).join(" ")}
-        </div>
-      </AbsoluteFill>
+          <div
+            style={{
+              maxWidth: "100%",
+              fontSize: CAPTION_SIZE,
+              fontWeight: 700,
+              lineHeight: 1.15,
+              color: "#fff",
+              textAlign: "center",
+              fontFamily: CAPTION_FONT,
+              WebkitTextStroke: `${CAPTION_STROKE}px #000`,
+              paintOrder: "stroke fill",
+              letterSpacing: "0.01em",
+            }}
+          >
+            {caption}
+          </div>
+        </AbsoluteFill>
+      ) : null}
     </AbsoluteFill>
   );
 };
