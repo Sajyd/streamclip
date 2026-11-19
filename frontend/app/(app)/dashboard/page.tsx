@@ -3,10 +3,11 @@ import { Suspense } from "react";
 
 import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
-import { PlanSummary, QuotaSummary } from "@/components/app/billing-widgets";
+import { PlanSummary } from "@/components/app/billing-widgets";
 import { ClipsLibrary } from "@/components/app/clips-library";
 import { LiveDetector } from "@/components/app/live-detector";
 import { LiveMonitor } from "@/components/app/live-monitor";
+import { LiveQuota } from "@/components/app/live-quota";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
 import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
@@ -187,7 +188,7 @@ async function Dashboard() {
             Aperçu live indisponible
           </div>
         )}
-        <QuotaSummary overview={overview} timeZone={timeZone} />
+        <LiveQuota overview={overview} timeZone={timeZone} />
         <NotificationsCard notifications={notifications} timeZone={timeZone} />
         <PlanSummary overview={overview} timeZone={timeZone} />
       </div>
