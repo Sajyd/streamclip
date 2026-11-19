@@ -57,6 +57,7 @@ log = structlog.get_logger(__name__)
 _DIAG_STR = {
     "empty_reason": 80,
     "transcript_preview": 280,
+    "frame_times_ms": 400,
     "raw_preview": 1200,
     "error": 400,
     "model": 128,
@@ -73,6 +74,9 @@ _DIAG_INT = (
     "dropped_count",
     "input_tokens",
     "output_tokens",
+    "word_start_ms",
+    "word_end_ms",
+    "unique_frames",
 )
 
 

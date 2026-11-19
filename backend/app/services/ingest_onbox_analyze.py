@@ -25,9 +25,9 @@ from typing import Any
 # One still every 10s (≤24 per 5-min window). Keyframe-only so the decoder
 # does not fight the RTMP reader on a 2 vCPU box.
 FRAME_EVERY_SEC = 10
-MAX_FRAMES = 24
-EXTRACT_TIMEOUT_S = 60
-_SEEK_SECONDS = (5, 30, 60, 120, 180, 240)
+MAX_FRAMES = 30
+EXTRACT_TIMEOUT_S = 20
+_ASR_CHUNK_MS = 45_000
 MIN_MOMENT_MS = 30_000
 MAX_MOMENT_MS = 60_000
 TARGET_MOMENT_MS = 60_000
@@ -41,8 +41,10 @@ Repère les moments viraux pour Shorts/TikTok/Reels.
 Règles strictes:
 - Chaque moment dure entre 30 et 60 secondes (préfère 60).
 - Les moments ne se chevauchent pas.
-- Timestamps relatifs à l'extrait (0 = début des 5 minutes), en millisecondes.
-- Inclus les timings mot à mot couvrant le moment.
+- start_ms et end_ms sont relatifs au début de cet extrait, en millisecondes.
+- Le JSON words donne start_ms/end_ms de chaque mot. Le JSON frames donne time_ms de chaque image.
+- Place le moment sur les mots de la réaction (un cri, un let's go, un rire, une explosion).
+- S'il n'y a pas de réaction claire: {"moments": []}.
 - Score de viralité entre 0 et 1.
 - Titre accrocheur + description avec hashtags.
 - Détecte si une webcam streamer est visible; si oui, donne le centre (x,y) sur un cadre 1920x1080.
@@ -96,105 +98,28 @@ def _run_ffmpeg(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[
         return None
 
 
-def _jpeg_frames(out_dir: Path) -> list[Path]:
-    frames = [
-        path
-        for path in out_dir.glob("*.jpg")
-        if path.is_file() and path.stat().st_size > 500
-    ]
-    return sorted(frames)[:MAX_FRAMES]
+def extract_frames(video: Path, out_dir: Path) -> list[tuple[Path, int]]:
+    """One JPEG at 0s, 10s, 20s, … on the finished segment file.
 
-
-def extract_frames(video: Path, out_dir: Path) -> list[Path]:
-    """Sample stills without decoding every picture of the HD segment.
-
-    A full `fps=1/5` decode of 5 minutes of 1080p returns nothing when ffmpeg
-    is OOM-killed or exits on one corrupt frame, and it is what stalls RTMP.
-    Keyframe sampling is enough for Luna. Any JPEG already written is kept
-    even if ffmpeg's exit code is non-zero.
+    Each still is sought on its own. A finished MP4 is not the live RTMP read,
+    so this does not stall the recorder. The timestamp is the position asked
+    for, in milliseconds from the start of the segment.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if not video.is_file() or video.stat().st_size < 10_000:
         return []
     ff = _ffmpeg()
-    common_in = [
-        "-threads",
-        "1",
-        "-skip_frame",
-        "nokey",
-        "-fflags",
-        "+discardcorrupt+genpts",
-        "-err_detect",
-        "ignore_err",
-        "-i",
-        str(video),
-        "-an",
-    ]
-    primary = [
-        ff,
-        "-y",
-        *common_in,
-        "-vf",
-        (
-            f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{FRAME_EVERY_SEC})',"
-            "scale=-2:360"
-        ),
-        "-fps_mode",
-        "vfr",
-        "-frames:v",
-        str(MAX_FRAMES),
-        "-q:v",
-        "8",
-        str(out_dir / "frame_%04d.jpg"),
-    ]
-    proc = _run_ffmpeg(primary, timeout=EXTRACT_TIMEOUT_S)
-    found = _jpeg_frames(out_dir)
-    if len(found) >= 4:
-        _log(f"extract_frames_ok count={len(found)} mode=keyframe")
-        return found
-    if proc is not None and proc.returncode != 0:
-        _log(
-            f"extract_frames_key_rc={proc.returncode} kept={len(found)} "
-            f"err={(proc.stderr or '')[-300:]}"
-        )
-    # Live copies often have a broken timeline, so time-based select keeps
-    # one frame. Step through keyframes by index instead.
-    secondary = [
-        ff,
-        "-y",
-        *common_in,
-        "-vf",
-        "select='not(mod(n,3))',scale=-2:360",
-        "-fps_mode",
-        "vfr",
-        "-frames:v",
-        str(MAX_FRAMES),
-        "-q:v",
-        "8",
-        str(out_dir / "kf_%04d.jpg"),
-    ]
-    proc2 = _run_ffmpeg(secondary, timeout=EXTRACT_TIMEOUT_S)
-    found = _jpeg_frames(out_dir)
-    if len(found) >= 4:
-        _log(f"extract_frames_ok count={len(found)} mode=keyframe_index")
-        return found
-    if proc2 is not None and proc2.returncode != 0:
-        _log(
-            f"extract_frames_index_rc={proc2.returncode} kept={len(found)} "
-            f"err={(proc2.stderr or '')[-300:]}"
-        )
-    for index, seconds in enumerate(_SEEK_SECONDS):
+    found: list[tuple[Path, int]] = []
+    for index in range(MAX_FRAMES):
+        time_ms = index * FRAME_EVERY_SEC * 1000
+        dest = out_dir / f"t{time_ms:07d}.jpg"
         grab = [
             ff,
             "-y",
             "-threads",
             "1",
             "-ss",
-            str(seconds),
-            "-fflags",
-            "+discardcorrupt+genpts",
-            "-err_detect",
-            "ignore_err",
+            f"{time_ms / 1000:.3f}",
             "-i",
             str(video),
             "-an",
@@ -204,11 +129,17 @@ def extract_frames(video: Path, out_dir: Path) -> list[Path]:
             "scale=-2:360",
             "-q:v",
             "8",
-            str(out_dir / f"seek_{index:02d}.jpg"),
+            str(dest),
         ]
-        _run_ffmpeg(grab, timeout=20)
-    found = _jpeg_frames(out_dir)
-    _log(f"extract_frames_done count={len(found)} bytes={video.stat().st_size}")
+        _run_ffmpeg(grab, timeout=EXTRACT_TIMEOUT_S)
+        if not dest.is_file() or dest.stat().st_size <= 500:
+            break
+        found.append((dest, time_ms))
+    _log(
+        "extract_frames_ok "
+        f"count={len(found)} every_s={FRAME_EVERY_SEC} "
+        f"times={[time_ms for _, time_ms in found]}"
+    )
     return found
 
 
@@ -240,8 +171,23 @@ def _wav_duration_ms(audio: bytes) -> int:
     return max(0, len(audio) - 44) // 32
 
 
-def _timed_words(text: str, duration_ms: int) -> list[dict[str, Any]]:
-    """Voxtral returns plain text. Spread words across the clip so Luna can attach them."""
+def _pcm_chunks(audio: bytes) -> list[tuple[int, bytes]]:
+    """Split a 16 kHz mono WAV into <=45s pieces. A full 5-min WAV exceeds Converse."""
+    header = audio[:44] if audio[:4] == b"RIFF" else b""
+    pcm = audio[len(header) :]
+    step = _ASR_CHUNK_MS * 32
+    if not pcm:
+        return [(0, audio)]
+    chunks: list[tuple[int, bytes]] = []
+    offset = 0
+    while offset < len(pcm):
+        chunks.append((offset // 32, header + pcm[offset : offset + step]))
+        offset += step
+    return chunks
+
+
+def _timed_words(text: str, duration_ms: int, offset_ms: int = 0) -> list[dict[str, Any]]:
+    """Spread Voxtral's plain text across this chunk, then shift onto the segment clock."""
     parts = [part for part in text.split() if part]
     if not parts or duration_ms <= 0:
         return []
@@ -251,14 +197,27 @@ def _timed_words(text: str, duration_ms: int) -> list[dict[str, Any]]:
     words: list[dict[str, Any]] = []
     for part, weight in zip(parts, weights):
         end = min(duration_ms, cursor + max(1, duration_ms * weight // total))
-        words.append({"text": part, "start_ms": cursor, "end_ms": max(cursor + 1, end)})
+        words.append(
+            {
+                "text": part,
+                "start_ms": offset_ms + cursor,
+                "end_ms": offset_ms + max(cursor + 1, end),
+            }
+        )
         cursor = end
-    words[-1]["end_ms"] = max(words[-1]["start_ms"] + 1, duration_ms)
+    words[-1]["end_ms"] = offset_ms + max(duration_ms, 1)
     return words
 
 
+def _converse_text(response: dict[str, Any]) -> str:
+    parts = response.get("output", {}).get("message", {}).get("content", [])
+    return " ".join(
+        part.get("text", "") for part in parts if isinstance(part, dict) and "text" in part
+    ).strip()
+
+
 def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
-    """Bedrock Voxtral Small via the instance role. Returns (text, approximate words)."""
+    """Bedrock Voxtral Small via the instance role. Word times are ms from the segment start."""
     provider = (os.environ.get("ASR_PROVIDER") or "bedrock").strip().lower()
     if provider in ("", "none"):
         _log("asr_skipped provider_none")
@@ -271,34 +230,51 @@ def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
         import boto3  # type: ignore[import-untyped]
 
         client = boto3.client("bedrock-runtime", region_name=region)
-        response = client.converse(
-            modelId=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"audio": {"format": "wav", "source": {"bytes": audio}}},
-                        {
-                            "text": (
-                                "Transcribe this audio verbatim in the language being spoken. "
-                                "Do not translate. Reply with only the spoken words."
-                            )
-                        },
-                    ],
-                }
-            ],
-            inferenceConfig={"maxTokens": 4096},
-        )
     except Exception as exc:  # noqa: BLE001
         _log(f"asr_fail model={model} err={exc}")
         return "", []
-    parts = response.get("output", {}).get("message", {}).get("content", [])
-    text = " ".join(
-        part.get("text", "") for part in parts if isinstance(part, dict) and "text" in part
-    ).strip()
-    words = _timed_words(text, _wav_duration_ms(audio))
-    _log(f"asr_ok model={model} chars={len(text)} words={len(words)}")
-    return text, words
+    texts: list[str] = []
+    words: list[dict[str, Any]] = []
+    chunks = _pcm_chunks(audio)
+    for index, (offset_ms, chunk) in enumerate(chunks):
+        try:
+            response = client.converse(
+                modelId=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"audio": {"format": "wav", "source": {"bytes": chunk}}},
+                            {
+                                "text": (
+                                    "Transcribe this audio verbatim in the language being spoken. "
+                                    "Do not translate. Reply with only the spoken words. "
+                                    "If there is no intelligible speech, reply with an empty string."
+                                )
+                            },
+                        ],
+                    }
+                ],
+                inferenceConfig={"maxTokens": 2048},
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"asr_fail model={model} chunk={index} offset_ms={offset_ms} err={exc}")
+            continue
+        text = _converse_text(response)
+        chunk_words = _timed_words(text, _wav_duration_ms(chunk), offset_ms)
+        texts.append(text)
+        words.extend(chunk_words)
+        _log(
+            f"asr_chunk index={index} offset_ms={offset_ms} "
+            f"chars={len(text)} words={len(chunk_words)} text={_clip(text, 240)}"
+        )
+    transcript = " ".join(part for part in texts if part).strip()
+    _log(
+        f"asr_ok model={model} chunks={len(chunks)} chars={len(transcript)} "
+        f"words={len(words)} first_ms={words[0]['start_ms'] if words else 0} "
+        f"last_ms={words[-1]['end_ms'] if words else 0}"
+    )
+    return transcript, words
 
 
 def _clamp_moment(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -379,22 +355,75 @@ def _clip(value: Any, limit: int) -> str:
     return text[:limit]
 
 
+def _luna_timeline(
+    transcript_text: str,
+    transcript_words: list[dict[str, Any]],
+    frames: list[tuple[Path, int]],
+) -> str:
+    """JSON clock Luna uses to place a highlight inside the segment."""
+    payload = {
+        "words": [
+            {
+                "text": str(word.get("text") or ""),
+                "start_ms": int(word["start_ms"]),
+                "end_ms": int(word["end_ms"]),
+            }
+            for word in transcript_words[:800]
+            if "start_ms" in word and "end_ms" in word
+        ],
+        "frames": [
+            {"index": index + 1, "time_ms": time_ms} for index, (_, time_ms) in enumerate(frames)
+        ],
+        "transcript": transcript_text[:12000],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _luna_content(
+    transcript_text: str,
+    transcript_words: list[dict[str, Any]],
+    frames: list[tuple[Path, int]],
+) -> list[dict[str, Any]]:
+    """Timeline JSON, then each distinct JPEG labeled with its segment time.
+
+    Repeating the same JPEG several times makes Bedrock bill 2 input tokens and
+    ignore the transcript. Identical bytes are sent once; every timestamp stays
+    in the JSON.
+    """
+    content: list[dict[str, Any]] = [
+        {"text": _luna_timeline(transcript_text, transcript_words, frames)}
+    ]
+    seen: set[bytes] = set()
+    for _path, time_ms in frames:
+        data = _path.read_bytes()
+        if data in seen:
+            continue
+        seen.add(data)
+        content.append({"text": f"frame at {time_ms} ms"})
+        content.append({"image": {"format": "jpeg", "source": {"bytes": data}}})
+    return content
+
+
 def luna_analyze(
     *,
     transcript_text: str,
     transcript_words: list[dict[str, Any]],
-    frame_paths: list[Path],
+    frames: list[tuple[Path, int]],
 ) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
     """Call Bedrock GPT-6 Luna. Returns (moments, model_id, diagnostics)."""
     model = (os.environ.get("BEDROCK_MODEL") or DEFAULT_MODEL).strip()
     region = (os.environ.get("BEDROCK_REGION") or DEFAULT_BEDROCK_REGION).strip()
+    frame_times = [time_ms for _, time_ms in frames]
     diagnostics: dict[str, Any] = {
         "model": model,
         "region": region,
-        "frames": len(frame_paths),
+        "frames": len(frames),
+        "frame_times_ms": frame_times,
         "transcript_chars": len(transcript_text),
         "word_count": len(transcript_words),
         "transcript_preview": _clip(transcript_text, 280),
+        "word_start_ms": transcript_words[0]["start_ms"] if transcript_words else 0,
+        "word_end_ms": transcript_words[-1]["end_ms"] if transcript_words else 0,
     }
     try:
         import boto3  # type: ignore[import-untyped]
@@ -402,39 +431,20 @@ def luna_analyze(
         raise RuntimeError("boto3 required on dedicated box") from exc
 
     client = boto3.client("bedrock-runtime", region_name=region)
-    content: list[dict[str, Any]] = [
-        {
-            "text": (
-                f"Transcription complete ({len(transcript_words)} mots):\n"
-                f"{transcript_text[:12000]}\n\n"
-                "Mots (echantillon JSON): "
-                + json.dumps(transcript_words[:400], ensure_ascii=False)
-            )
-        }
-    ]
-    for path in frame_paths[:MAX_FRAMES]:
-        fmt = "jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "webp"
-        content.append(
-            {
-                "image": {
-                    "format": fmt,
-                    "source": {"bytes": path.read_bytes()},
-                }
-            }
-        )
+    content = _luna_content(transcript_text, transcript_words, frames)
     response = client.converse(
         modelId=model,
         system=[{"text": SYSTEM_PROMPT}],
         messages=[{"role": "user", "content": content}],
         inferenceConfig={"maxTokens": 4096},
     )
-    parts = response.get("output", {}).get("message", {}).get("content", [])
-    text = " ".join(p.get("text", "") for p in parts if "text" in p)
+    text = _converse_text(response)
     usage = response.get("usage") or {}
     diagnostics["stop_reason"] = response.get("stopReason")
     diagnostics["input_tokens"] = usage.get("inputTokens")
     diagnostics["output_tokens"] = usage.get("outputTokens")
     diagnostics["raw_preview"] = _clip(text, 1200)
+    diagnostics["unique_frames"] = sum(1 for block in content if "image" in block)
     try:
         payload = _parse_json(text)
     except json.JSONDecodeError:
@@ -492,7 +502,8 @@ def luna_analyze(
         ]
     _log(
         "luna_result "
-        f"frames={len(frame_paths)} words={len(transcript_words)} "
+        f"frames={len(frames)} unique={diagnostics['unique_frames']} "
+        f"in={diagnostics['input_tokens']} words={len(transcript_words)} "
         f"chars={len(transcript_text)} stop={diagnostics.get('stop_reason')} "
         f"raw={diagnostics['raw_moments']} kept={len(kept)} "
         f"dropped={diagnostics['dropped_count']} "
@@ -598,7 +609,7 @@ def analyze_segment_file(
                 moments, model, diagnostics = luna_analyze(
                     transcript_text=transcript_text,
                     transcript_words=words,
-                    frame_paths=frames,
+                    frames=frames,
                 )
                 moments = _attach_words(moments, words)
                 diagnostics["frames"] = len(frames)
