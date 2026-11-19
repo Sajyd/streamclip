@@ -6,12 +6,11 @@ fallback host: if launch fails, resolve fails.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import gzip
-import io
 import shlex
 import time
-import tokenize
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,35 +23,48 @@ from app.core.config import Settings
 log = structlog.get_logger(__name__)
 
 
-def _shrink_python(src: str) -> str:
-    """Drop comments and docstrings so the gzipped user-data fits in 16 KiB."""
-    tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
-    skip_types = (
-        tokenize.COMMENT,
-        tokenize.NL,
-        tokenize.NEWLINE,
-        tokenize.INDENT,
-        tokenize.DEDENT,
-        tokenize.ENCODING,
-        tokenize.ENDMARKER,
-    )
-    meaningful = [i for i, tok in enumerate(tokens) if tok.type not in skip_types]
-    drop: set[int] = set()
-    for n, index in enumerate(meaningful):
-        tok = tokens[index]
-        if tok.type != tokenize.STRING:
-            continue
-        if not (tok.string.startswith('"""') or tok.string.startswith("'''")):
-            continue
-        prev = tokens[meaningful[n - 1]].type if n else None
-        if prev in (None, tokenize.INDENT, tokenize.COLON):
-            drop.add(index)
-    kept = [
-        tok
-        for i, tok in enumerate(tokens)
-        if i not in drop and tok.type not in (tokenize.COMMENT, tokenize.NL)
-    ]
-    return tokenize.untokenize(kept)
+class _DocstringStripper(ast.NodeTransformer):
+    def _strip(self, node: ast.AST) -> ast.AST:
+        body = getattr(node, "body", None)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(getattr(body[0], "value", None), ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+        return node
+
+    def visit_Module(self, node: ast.Module) -> ast.AST:
+        self.generic_visit(node)
+        return self._strip(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        self.generic_visit(node)
+        return self._strip(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        self.generic_visit(node)
+        return self._strip(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        self.generic_visit(node)
+        return self._strip(node)
+
+
+def _strip_docstrings(src: str) -> str:
+    """Shorten sources for the 16 KiB user-data cap without token rewriting.
+
+    tokenize.untokenize dropped indentation that Python 3.9 rejects, so the
+    agent on AL2023 never bound :8080. ast.unparse keeps a valid program.
+    """
+    tree = _DocstringStripper().visit(ast.parse(src))
+    ast.fix_missing_locations(tree)
+    cleaned = ast.unparse(tree)
+    if not cleaned.endswith("\n"):
+        cleaned += "\n"
+    compile(cleaned, "<ingest-userdata>", "exec")
+    return cleaned
 
 
 def _strip_shell_comments(src: str) -> str:
@@ -181,7 +193,7 @@ class AwsSpotLauncher:
         """
         text = Path(__file__).with_name("ingest_agent.py").read_text()
         start = text.index("\ndef _render_html")
-        end = text.index("\ndef main")
+        end = text.index("\nclass Handler")
         stub = """
 def _render_html(title: str, payload: dict, *, page: str) -> bytes:
     body = html.escape(json.dumps(payload, indent=2, default=str))
@@ -194,14 +206,14 @@ def _render_html(title: str, payload: dict, *, page: str) -> bytes:
 
 """
         packed = text[:start] + stub + text[end:]
-        compile(packed, "ingest_agent.py", "exec")
-        return _shrink_python(packed)
+        packed = _strip_docstrings(packed)
+        if "def _supervise_loops" not in packed or "class Handler" not in packed:
+            raise RuntimeError("packed agent is missing the HTTP handler")
+        return packed
 
     def _packed_onbox_source(self) -> str:
         text = Path(__file__).with_name("ingest_onbox_analyze.py").read_text()
-        shrunk = _shrink_python(text)
-        compile(shrunk, "ingest_onbox_analyze.py", "exec")
-        return shrunk
+        return _strip_docstrings(text)
 
     def _user_data_script(self) -> str:
         """Self-contained boot script. Nothing is written to the media bucket."""

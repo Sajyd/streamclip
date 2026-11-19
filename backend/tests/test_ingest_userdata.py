@@ -54,3 +54,10 @@ def test_user_data_is_gzipped_and_never_uploaded() -> None:
     assert "seg_${SAFE}.pid" in script
     assert "AWS_DEFAULT_REGION=eu-north-1" in script
     assert not hasattr(launcher, "_publish_boot_bundle")
+    agent = launcher._packed_agent_source()
+    onbox = launcher._packed_onbox_source()
+    assert "class Handler" in agent
+    assert "def _supervise_loops" in agent
+    assert "def _render_html" in agent
+    compile(agent, "agent.py", "exec")
+    compile(onbox, "onbox.py", "exec")
