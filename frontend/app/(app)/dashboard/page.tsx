@@ -1,110 +1,38 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { markNotificationsReadAction } from "@/app/actions/account";
 import { resendVerificationAction } from "@/app/actions/auth";
+import { highlightMediaUrlAction } from "@/app/actions/highlights";
 import { PlanSummary } from "@/components/app/billing-widgets";
-import { ClipsLibrary } from "@/components/app/clips-library";
 import { LiveDetector } from "@/components/app/live-detector";
 import { LiveMonitor } from "@/components/app/live-monitor";
+import { LiveNotifications } from "@/components/app/live-notifications";
 import { LiveQuota } from "@/components/app/live-quota";
+import { RecentHighlights } from "@/components/app/recent-highlights";
 import { ButtonLink } from "@/components/ui/button";
 import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
-import { Card, CardDescription, CardTitle, Notice, Skeleton } from "@/components/ui/primitives";
+import { Notice, Skeleton } from "@/components/ui/primitives";
 import {
   getBillingOverview,
-  getClips,
+  getHighlights,
   getIngestSessions,
   getLivePlayback,
   getNotifications,
   requireSession,
 } from "@/lib/dal";
-import { cx, formatDateTime } from "@/lib/format";
-import type { Notification, NotificationList } from "@/types/api";
 
 export const metadata: Metadata = { title: "Tableau de bord" };
 
 const PATH = "/dashboard";
 
-const SEVERITY_DOT: Record<Notification["severity"], string> = {
-  info: "bg-brand-400",
-  success: "bg-ok-400",
-  warning: "bg-warn-400",
-  error: "bg-danger-400",
-};
-
-function NotificationsCard({
-  notifications,
-  timeZone,
-}: {
-  notifications: NotificationList;
-  timeZone: string;
-}) {
-  return (
-    <Card className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium tracking-[0.16em] text-ink-400 uppercase">Activité</p>
-          <CardTitle className="mt-2">Notifications</CardTitle>
-          <CardDescription>
-            {notifications.unread_count > 0
-              ? `${notifications.unread_count} non lue${notifications.unread_count > 1 ? "s" : ""}`
-              : "Vous êtes à jour."}
-          </CardDescription>
-        </div>
-        {notifications.unread_count > 0 ? (
-          <Form action={markNotificationsReadAction} className="space-y-0">
-            <SubmitButton variant="ghost" size="sm">
-              Tout marquer comme lu
-            </SubmitButton>
-          </Form>
-        ) : null}
-      </div>
-      {notifications.items.length === 0 ? (
-        <p className="mt-6 text-sm text-ink-400">Aucune notification pour le moment.</p>
-      ) : (
-        <ul className="mt-4 max-h-56 flex-1 divide-y divide-white/5 overflow-y-auto">
-          {notifications.items.slice(0, 6).map((notification) => (
-            <li key={notification.id} className="flex gap-3 py-3 first:pt-1">
-              <span
-                aria-hidden
-                className={cx(
-                  "mt-1.5 size-2 shrink-0 rounded-full",
-                  notification.read_at ? "bg-ink-600" : SEVERITY_DOT[notification.severity],
-                )}
-              />
-              <div className="min-w-0">
-                <p
-                  className={cx(
-                    "text-sm",
-                    notification.read_at ? "text-ink-200" : "font-medium text-white",
-                  )}
-                >
-                  {notification.title}
-                </p>
-                <p className="mt-0.5 line-clamp-2 text-sm leading-relaxed text-ink-300">
-                  {notification.body}
-                </p>
-                <p className="mt-1 text-xs text-ink-500">
-                  {formatDateTime(notification.created_at, timeZone)}
-                </p>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
 async function Dashboard() {
   const { token, me } = await requireSession(PATH);
   const { user, capabilities } = me;
-  const [overview, notifications, ingestSessions, clips, playback] = await Promise.all([
+  const [overview, notifications, ingestSessions, highlights, playback] = await Promise.all([
     getBillingOverview(token, PATH),
     getNotifications(token, PATH),
     capabilities.ingest_keys ? getIngestSessions(token, PATH) : Promise.resolve([]),
-    getClips(token, PATH),
+    getHighlights(token, PATH),
     capabilities.ingest_keys
       ? getLivePlayback(token, PATH)
       : Promise.resolve({
@@ -132,7 +60,7 @@ async function Dashboard() {
             Bonjour{user.display_name ? ` ${user.display_name}` : ""}
           </h1>
           <p className="mt-1.5 text-sm text-ink-300">
-            Lancez votre live — STREAMCLIP détecte et prépare vos clips.
+            Lancez votre live — STREAMCLIP détecte et prépare vos highlights.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -142,8 +70,8 @@ async function Dashboard() {
           <ButtonLink href="/guide" variant="secondary" size="sm">
             Guide
           </ButtonLink>
-          <ButtonLink href="/clips" variant="secondary" size="sm">
-            Clips
+          <ButtonLink href="/highlights" variant="secondary" size="sm">
+            Highlights
           </ButtonLink>
           <ButtonLink href="/billing" variant="secondary" size="sm">
             {overview.is_paid ? "Abonnement" : "Offres"}
@@ -189,11 +117,15 @@ async function Dashboard() {
           </div>
         )}
         <LiveQuota overview={overview} timeZone={timeZone} />
-        <NotificationsCard notifications={notifications} timeZone={timeZone} />
+        <LiveNotifications notifications={notifications} timeZone={timeZone} />
         <PlanSummary overview={overview} timeZone={timeZone} />
       </div>
 
-      <ClipsLibrary clips={clips} timeZone={timeZone} />
+      <RecentHighlights
+        highlights={highlights}
+        mediaUrlAction={highlightMediaUrlAction}
+        showWatermark={!overview.is_paid}
+      />
     </div>
   );
 }
