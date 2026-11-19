@@ -108,6 +108,7 @@ def test_transcribe_calls_voxtral_small(monkeypatch) -> None:
         def converse(self, **kwargs):
             seen["model"] = kwargs["modelId"]
             seen["audio"] = kwargs["messages"][0]["content"][0]["audio"]["source"]["bytes"]
+            seen["instruction"] = kwargs["messages"][0]["content"][1]["text"]
             return {"output": {"message": {"content": [{"text": "salut tout le monde"}]}}}
 
     monkeypatch.setenv("ASR_PROVIDER", "bedrock")
@@ -120,6 +121,8 @@ def test_transcribe_calls_voxtral_small(monkeypatch) -> None:
     text, words = onbox.transcribe(b"RIFFxxxxWAVEfmt " + b"\x00" * 44 + b"\x00\x01" * 16000)
 
     assert seen["model"] == onbox.DEFAULT_ASR_MODEL
+    assert "Do not translate" in seen["instruction"]
+    assert "language being spoken" in seen["instruction"]
     assert text == "salut tout le monde"
     assert [word["text"] for word in words] == ["salut", "tout", "le", "monde"]
     assert words[0]["start_ms"] == 0

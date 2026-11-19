@@ -280,8 +280,8 @@ def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
                         {"audio": {"format": "wav", "source": {"bytes": audio}}},
                         {
                             "text": (
-                                "Transcris cet audio verbatim. "
-                                "Reponds uniquement avec le texte dit."
+                                "Transcribe this audio verbatim in the language being spoken. "
+                                "Do not translate. Reply with only the spoken words."
                             )
                         },
                     ],
