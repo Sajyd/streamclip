@@ -61,5 +61,5 @@ def test_user_data_is_gzipped_and_never_uploaded() -> None:
     assert "def _render_html" in agent
     compile(agent, "agent.py", "exec")
     compile(onbox, "onbox.py", "exec")
-    assert "mistral.voxtral-small-24b-2507" in onbox
+    assert "start_transcription_job" in onbox
     assert "def _supervise_loops" in agent

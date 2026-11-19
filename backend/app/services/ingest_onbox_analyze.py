@@ -2,7 +2,7 @@
 """On-box 5-min segment analysis for the dedicated :8080 agent.
 
 Runs on the EC2 spot with stdlib + boto3 (installed at boot):
-  keyframes → Bedrock Voxtral Small → Bedrock GPT-6 Luna →
+  keyframes at fixed times → Amazon Transcribe (word times) → Bedrock GPT-6 Luna →
   POST moments to the API persist hook.
 
 Deployed as /usr/local/bin/streamclip_onbox_analyze.py alongside the agent.
@@ -27,13 +27,11 @@ from typing import Any
 FRAME_EVERY_SEC = 10
 MAX_FRAMES = 30
 EXTRACT_TIMEOUT_S = 20
-_ASR_CHUNK_MS = 45_000
 MIN_MOMENT_MS = 30_000
 MAX_MOMENT_MS = 60_000
 TARGET_MOMENT_MS = 60_000
 DEFAULT_MODEL = "us.openai.gpt-6-luna"
 DEFAULT_BEDROCK_REGION = "us-east-1"
-DEFAULT_ASR_MODEL = "mistral.voxtral-small-24b-2507"
 
 SYSTEM_PROMPT = """Tu analyses un extrait de live de 5 minutes (images + transcription).
 Repère les moments viraux pour Shorts/TikTok/Reels.
@@ -166,115 +164,105 @@ def extract_audio_wav(video: Path, wav: Path) -> bool:
     return True
 
 
-def _wav_duration_ms(audio: bytes) -> int:
-    # ffmpeg pcm_s16le 16 kHz mono: 32 bytes per millisecond after a 44-byte header.
-    return max(0, len(audio) - 44) // 32
-
-
-def _pcm_chunks(audio: bytes) -> list[tuple[int, bytes]]:
-    """Split a 16 kHz mono WAV into <=45s pieces. A full 5-min WAV exceeds Converse."""
-    header = audio[:44] if audio[:4] == b"RIFF" else b""
-    pcm = audio[len(header) :]
-    step = _ASR_CHUNK_MS * 32
-    if not pcm:
-        return [(0, audio)]
-    chunks: list[tuple[int, bytes]] = []
-    offset = 0
-    while offset < len(pcm):
-        chunks.append((offset // 32, header + pcm[offset : offset + step]))
-        offset += step
-    return chunks
-
-
-def _timed_words(text: str, duration_ms: int, offset_ms: int = 0) -> list[dict[str, Any]]:
-    """Spread Voxtral's plain text across this chunk, then shift onto the segment clock."""
-    parts = [part for part in text.split() if part]
-    if not parts or duration_ms <= 0:
-        return []
-    weights = [max(1, len(part)) for part in parts]
-    total = sum(weights)
-    cursor = 0
+def _words_from_transcribe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Amazon Transcribe items. Times are seconds from the start of the segment."""
     words: list[dict[str, Any]] = []
-    for part, weight in zip(parts, weights):
-        end = min(duration_ms, cursor + max(1, duration_ms * weight // total))
-        words.append(
-            {
-                "text": part,
-                "start_ms": offset_ms + cursor,
-                "end_ms": offset_ms + max(cursor + 1, end),
-            }
-        )
-        cursor = end
-    words[-1]["end_ms"] = offset_ms + max(duration_ms, 1)
+    for item in items:
+        content = str(((item.get("alternatives") or [{}])[0]).get("content") or "")
+        if not content:
+            continue
+        if item.get("type") == "punctuation" and words:
+            words[-1]["text"] = f"{words[-1]['text']}{content}"
+            continue
+        try:
+            start_ms = int(float(item["start_time"]) * 1000)
+            end_ms = int(float(item["end_time"]) * 1000)
+        except (KeyError, TypeError, ValueError):
+            continue
+        words.append({"text": content, "start_ms": start_ms, "end_ms": max(start_ms + 1, end_ms)})
     return words
 
 
-def _converse_text(response: dict[str, Any]) -> str:
-    parts = response.get("output", {}).get("message", {}).get("content", [])
-    return " ".join(
-        part.get("text", "") for part in parts if isinstance(part, dict) and "text" in part
-    ).strip()
-
-
-def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
-    """Bedrock Voxtral Small via the instance role. Word times are ms from the segment start."""
-    provider = (os.environ.get("ASR_PROVIDER") or "bedrock").strip().lower()
+def transcribe(audio: bytes, storage_key: str = "") -> tuple[str, list[dict[str, Any]]]:
+    """Amazon Transcribe. Each word has start_ms/end_ms from the start of the segment."""
+    provider = (os.environ.get("ASR_PROVIDER") or "transcribe").strip().lower()
     if provider in ("", "none"):
         _log("asr_skipped provider_none")
         return "", []
-    model = (os.environ.get("ASR_MODEL") or DEFAULT_ASR_MODEL).strip()
-    if not model.startswith("mistral.voxtral"):
-        model = DEFAULT_ASR_MODEL
-    region = (os.environ.get("BEDROCK_REGION") or DEFAULT_BEDROCK_REGION).strip()
+    bucket = (os.environ.get("S3_BUCKET") or "").strip()
+    region = (os.environ.get("AWS_REGION") or "eu-north-1").strip()
+    key = storage_key.strip().lstrip("/")
+    if not bucket or (not key and not audio):
+        _log("asr_skipped no_media")
+        return "", []
     try:
         import boto3  # type: ignore[import-untyped]
 
-        client = boto3.client("bedrock-runtime", region_name=region)
+        s3 = boto3.client("s3", region_name=region)
+        jobs = boto3.client("transcribe", region_name=region)
     except Exception as exc:  # noqa: BLE001
-        _log(f"asr_fail model={model} err={exc}")
+        _log(f"asr_fail err={exc}")
         return "", []
-    texts: list[str] = []
-    words: list[dict[str, Any]] = []
-    chunks = _pcm_chunks(audio)
-    for index, (offset_ms, chunk) in enumerate(chunks):
-        try:
-            response = client.converse(
-                modelId=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"audio": {"format": "wav", "source": {"bytes": chunk}}},
-                            {
-                                "text": (
-                                    "Transcribe this audio verbatim in the language being spoken. "
-                                    "Do not translate. Reply with only the spoken words. "
-                                    "If there is no intelligible speech, reply with an empty string."
-                                )
-                            },
-                        ],
-                    }
-                ],
-                inferenceConfig={"maxTokens": 2048},
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log(f"asr_fail model={model} chunk={index} offset_ms={offset_ms} err={exc}")
-            continue
-        text = _converse_text(response)
-        chunk_words = _timed_words(text, _wav_duration_ms(chunk), offset_ms)
-        texts.append(text)
-        words.extend(chunk_words)
-        _log(
-            f"asr_chunk index={index} offset_ms={offset_ms} "
-            f"chars={len(text)} words={len(chunk_words)} text={_clip(text, 240)}"
+    uploaded = ""
+    if not key:
+        uploaded = f"tmp/asr/{int(time.time() * 1000)}.wav"
+        key = uploaded
+        s3.put_object(Bucket=bucket, Key=key, Body=audio, ContentType="audio/wav")
+    job_name = f"sc-{int(time.time() * 1000)}"
+    out_key = f"tmp/asr/{job_name}.json"
+    try:
+        jobs.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={"MediaFileUri": f"s3://{bucket}/{key}"},
+            IdentifyMultipleLanguages=True,
+            LanguageOptions=["fr-FR", "en-US", "en-GB", "es-ES", "de-DE"],
+            OutputBucketName=bucket,
+            OutputKey=out_key,
         )
-    transcript = " ".join(part for part in texts if part).strip()
+        status = "IN_PROGRESS"
+        failure = ""
+        for _ in range(90):
+            job = jobs.get_transcription_job(TranscriptionJobName=job_name)["TranscriptionJob"]
+            status = job.get("TranscriptionJobStatus") or ""
+            if status in ("COMPLETED", "FAILED"):
+                failure = str(job.get("FailureReason") or "")
+                break
+            time.sleep(2)
+        if status != "COMPLETED":
+            _log(f"asr_fail status={status} reason={failure[:240]}")
+            return "", []
+        try:
+            raw = s3.get_object(Bucket=bucket, Key=out_key)["Body"].read()
+        except Exception:  # noqa: BLE001
+            out_key = f"{out_key}.json"
+            raw = s3.get_object(Bucket=bucket, Key=out_key)["Body"].read()
+        payload = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"asr_fail err={exc}")
+        return "", []
+    finally:
+        try:
+            jobs.delete_transcription_job(TranscriptionJobName=job_name)
+        except Exception:  # noqa: BLE001
+            pass
+        for extra in (out_key, uploaded):
+            if not extra:
+                continue
+            try:
+                s3.delete_object(Bucket=bucket, Key=extra)
+            except Exception:  # noqa: BLE001
+                pass
+    results = payload.get("results") or {}
+    words = _words_from_transcribe_items(results.get("items") or [])
+    text = " ".join(part.get("transcript", "") for part in results.get("transcripts") or []).strip()
+    if not text:
+        text = " ".join(word["text"] for word in words).strip()
     _log(
-        f"asr_ok model={model} chunks={len(chunks)} chars={len(transcript)} "
-        f"words={len(words)} first_ms={words[0]['start_ms'] if words else 0} "
-        f"last_ms={words[-1]['end_ms'] if words else 0}"
+        f"asr_ok words={len(words)} chars={len(text)} "
+        f"first_ms={words[0]['start_ms'] if words else 0} "
+        f"last_ms={words[-1]['end_ms'] if words else 0} text={_clip(text, 240)}"
     )
-    return transcript, words
+    return text, words
 
 
 def _clamp_moment(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -355,6 +343,13 @@ def _clip(value: Any, limit: int) -> str:
     return text[:limit]
 
 
+def _converse_text(response: dict[str, Any]) -> str:
+    parts = response.get("output", {}).get("message", {}).get("content", [])
+    return " ".join(
+        part.get("text", "") for part in parts if isinstance(part, dict) and "text" in part
+    ).strip()
+
+
 def _luna_timeline(
     transcript_text: str,
     transcript_words: list[dict[str, Any]],
@@ -368,7 +363,7 @@ def _luna_timeline(
                 "start_ms": int(word["start_ms"]),
                 "end_ms": int(word["end_ms"]),
             }
-            for word in transcript_words[:800]
+            for word in transcript_words[:2000]
             if "start_ms" in word and "end_ms" in word
         ],
         "frames": [
@@ -593,7 +588,7 @@ def analyze_segment_file(
         transcript_text = ""
         words: list[dict[str, Any]] = []
         if extract_audio_wav(video_path, wav_path):
-            transcript_text, words = transcribe(wav_path.read_bytes())
+            transcript_text, words = transcribe(wav_path.read_bytes(), storage_key)
         moments: list[dict[str, Any]] = []
         model = (os.environ.get("BEDROCK_MODEL") or DEFAULT_MODEL).strip()
         provider = "bedrock"

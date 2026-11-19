@@ -57,10 +57,88 @@ def test_luna_timeline_keeps_word_and_frame_clocks(tmp_path: Path) -> None:
     assert len(images) == 2
 
 
-def test_word_times_shift_to_the_chunk_offset() -> None:
-    words = onbox._timed_words("let's gooooo", duration_ms=2_000, offset_ms=180_000)
-    assert words[0]["start_ms"] == 180_000
-    assert words[-1]["end_ms"] == 182_000
+def test_transcribe_items_keep_word_times() -> None:
+    words = onbox._words_from_transcribe_items(
+        [
+            {
+                "type": "pronunciation",
+                "start_time": "180.0",
+                "end_time": "180.4",
+                "alternatives": [{"content": "let's"}],
+            },
+            {
+                "type": "pronunciation",
+                "start_time": "180.4",
+                "end_time": "181.0",
+                "alternatives": [{"content": "go"}],
+            },
+            {"type": "punctuation", "alternatives": [{"content": "!"}]},
+        ]
+    )
+    assert words == [
+        {"text": "let's", "start_ms": 180_000, "end_ms": 180_400},
+        {"text": "go!", "start_ms": 180_400, "end_ms": 181_000},
+    ]
+
+
+def test_transcribe_reads_job_word_times(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class _Body:
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "results": {
+                        "transcripts": [{"transcript": "let's go"}],
+                        "items": [
+                            {
+                                "type": "pronunciation",
+                                "start_time": "180.0",
+                                "end_time": "181.0",
+                                "alternatives": [{"content": "go"}],
+                            }
+                        ],
+                    }
+                }
+            ).encode()
+
+    class _S3:
+        def get_object(self, **_kwargs):
+            return {"Body": _Body()}
+
+        def delete_object(self, **kwargs):
+            seen["deleted"] = kwargs["Key"]
+
+    class _Jobs:
+        def start_transcription_job(self, **kwargs):
+            seen["uri"] = kwargs["Media"]["MediaFileUri"]
+            seen["languages"] = kwargs["IdentifyMultipleLanguages"]
+
+        def get_transcription_job(self, **_kwargs):
+            return {"TranscriptionJob": {"TranscriptionJobStatus": "COMPLETED"}}
+
+        def delete_transcription_job(self, **_kwargs):
+            seen["job_deleted"] = True
+
+    def client(service, **_kwargs):
+        return _S3() if service == "s3" else _Jobs()
+
+    monkeypatch.setenv("ASR_PROVIDER", "transcribe")
+    monkeypatch.setenv("S3_BUCKET", "stream-clip")
+    monkeypatch.setenv("AWS_REGION", "eu-north-1")
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "boto3",
+        type("Boto", (), {"client": staticmethod(client)}),
+    )
+
+    text, words = onbox.transcribe(b"", "tmp/lives/session/seg_0001.mp4")
+
+    assert seen["uri"] == "s3://stream-clip/tmp/lives/session/seg_0001.mp4"
+    assert seen["languages"] is True
+    assert text == "let's go"
+    assert words == [{"text": "go", "start_ms": 180_000, "end_ms": 181_000}]
+    assert seen["job_deleted"] is True
 
 
 def test_analyze_posts_frames_to_luna(monkeypatch, tmp_path: Path) -> None:
@@ -103,35 +181,6 @@ def test_analyze_posts_frames_to_luna(monkeypatch, tmp_path: Path) -> None:
     assert payload["frames"] == 1
     assert payload["provider"] == "bedrock"
     assert payload["posted"] is True
-
-
-def test_transcribe_calls_voxtral_small(monkeypatch) -> None:
-    seen: dict[str, object] = {}
-
-    class _Client:
-        def converse(self, **kwargs):
-            seen["model"] = kwargs["modelId"]
-            seen["audio"] = kwargs["messages"][0]["content"][0]["audio"]["source"]["bytes"]
-            seen["instruction"] = kwargs["messages"][0]["content"][1]["text"]
-            return {"output": {"message": {"content": [{"text": "salut tout le monde"}]}}}
-
-    monkeypatch.setenv("ASR_PROVIDER", "bedrock")
-    monkeypatch.setenv("ASR_MODEL", "whisper-large-v3-turbo")
-    monkeypatch.setenv("BEDROCK_REGION", "us-east-1")
-    monkeypatch.setitem(__import__("sys").modules, "boto3", type("Boto", (), {
-        "client": staticmethod(lambda *_a, **_k: _Client())
-    }))
-
-    text, words = onbox.transcribe(b"RIFFxxxxWAVEfmt " + b"\x00" * 44 + b"\x00\x01" * 16000)
-
-    assert seen["model"] == onbox.DEFAULT_ASR_MODEL
-    assert "Do not translate" in seen["instruction"]
-    assert "language being spoken" in seen["instruction"]
-    assert "no intelligible speech" in seen["instruction"]
-    assert text == "salut tout le monde"
-    assert [word["text"] for word in words] == ["salut", "tout", "le", "monde"]
-    assert words[0]["start_ms"] == 0
-    assert words[-1]["end_ms"] > words[0]["start_ms"]
 
 
 def test_transcribe_skips_when_provider_is_none(monkeypatch) -> None:

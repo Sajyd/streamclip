@@ -523,10 +523,10 @@ def stop_path(path: str) -> dict:
 
 
 def _asr_configured() -> bool:
-    provider = (os.environ.get("ASR_PROVIDER") or "bedrock").strip().lower()
+    provider = (os.environ.get("ASR_PROVIDER") or "transcribe").strip().lower()
     if provider in ("", "none"):
         return False
-    if provider in ("bedrock", "voxtral"):
+    if provider in ("bedrock", "voxtral", "transcribe"):
         return True
     return bool((os.environ.get("ASR_API_KEY") or "").strip())
 

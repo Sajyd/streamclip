@@ -142,6 +142,9 @@ resource "aws_iam_role_policy" "ingest_tmp" {
         Action = [
           "bedrock:InvokeModel",
           "bedrock:Converse",
+          "transcribe:StartTranscriptionJob",
+          "transcribe:GetTranscriptionJob",
+          "transcribe:DeleteTranscriptionJob",
         ]
         Resource = ["*"]
       },
