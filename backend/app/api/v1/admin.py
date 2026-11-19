@@ -22,6 +22,7 @@ from app.schemas.api import (
     AdminUserList,
     AdminUserOut,
     LivePlaybackOut,
+    Message,
     SuspendRequest,
 )
 from app.services import admin as admin_service
@@ -108,6 +109,13 @@ async def get_live(_staff: Staff, ctx: Ctx, live_id: uuid.UUID) -> AdminLiveDeta
     if detail is None:
         raise NotFoundError("Live introuvable.", code="live_not_found")
     return AdminLiveDetailOut(**detail)
+
+
+@router.post("/lives/{live_id}/stop", response_model=Message)
+async def stop_live(live_id: uuid.UUID, admin: Admin, ctx: Ctx, meta: Meta) -> Message:
+    """Stop the live and disconnect the publisher so OBS drops the session."""
+    message = await admin_service.stop_live(ctx, admin, live_id, meta=meta)
+    return Message(message=message)
 
 
 @router.get("/lives/{live_id}/playback", response_model=LivePlaybackOut)

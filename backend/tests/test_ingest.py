@@ -655,6 +655,106 @@ async def test_segment_gate_resumes_the_same_live_after_quota_returns(
     assert live[0]["id"] == original_id
 
 
+async def test_stall_tick_does_not_revive_disconnected_live(client: httpx.AsyncClient) -> None:
+    """A recorder stall after OBS quits must not put the dashboard back on air."""
+    account = await register(client, email="ingest-stall@example.com")
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={
+                "action": "publish",
+                "path": f"live/{public_id}",
+                "protocol": "rtmp",
+                "password": secret,
+            },
+            headers=hook,
+        )
+    ).status_code == 200
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/event",
+            json={"event": "publisher_disconnect", "path": f"live/{public_id}"},
+            headers=hook,
+        )
+    ).status_code == 200
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/event",
+            json={"event": "tick", "path": f"live/{public_id}", "processed_ms": 1},
+            headers=hook,
+        )
+    ).status_code == 200
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert sessions[0]["status"] == "interrupted"
+    playback = await client.get(f"{API}/ingest/playback", headers=account.headers)
+    assert playback.status_code == 200
+    assert playback.json()["status"] == "offline"
+
+
+async def test_admin_stop_disconnects_and_blocks_relay_reopen(
+    client: httpx.AsyncClient, ctx: AppContext
+) -> None:
+    account = await register(client, email="ingest-admin-stop@example.com")
+    admin = await register(client, email="ingest-admin-stop-ops@example.com")
+    async with ctx.db.system_tx() as session:
+        await session.execute(
+            text("UPDATE users SET platform_role = 'admin' WHERE id = :id"),
+            {"id": admin.user_id},
+        )
+    issued = (await client.post(f"{API}/ingest/key", json={}, headers=account.headers)).json()
+    public_id, _, secret = issued["stream_key"].partition("/")
+    hook = {"x-streamclip-ingest-secret": HOOK_SECRET}
+    path = f"live/{public_id}"
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={"action": "publish", "path": path, "protocol": "rtmp", "password": secret},
+            headers=hook,
+        )
+    ).status_code == 200
+    live_id = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"][0]["id"]
+
+    forbidden = await client.post(f"{API}/admin/lives/{live_id}/stop", headers=account.headers)
+    assert forbidden.status_code == 403
+
+    stopped = await client.post(f"{API}/admin/lives/{live_id}/stop", headers=admin.headers)
+    assert stopped.status_code == 200, stopped.text
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert sessions[0]["status"] == "completed"
+    assert sessions[0]["end_reason"] == "admin_stopped"
+
+    tick = await client.post(
+        f"{API}/ingest/hooks/event",
+        json={"event": "tick", "path": path, "processed_ms": 1},
+        headers=hook,
+    )
+    ready = await client.post(
+        f"{API}/ingest/hooks/event",
+        json={"event": "publisher_ready", "path": path, "protocol": "rtmp"},
+        headers=hook,
+    )
+    assert tick.status_code == 200 and ready.json()["message"] == "admin_stopped"
+    gate = await client.get(f"{API}/ingest/hooks/segment-gate", params={"path": path}, headers=hook)
+    assert gate.json()["stop"] is True
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert sessions[0]["status"] == "completed"
+
+    # The streamer can go live again from OBS. That is an edge publish, not the relay.
+    assert (
+        await client.post(
+            f"{API}/ingest/hooks/auth",
+            json={"action": "publish", "path": path, "protocol": "rtmp", "password": secret},
+            headers=hook,
+        )
+    ).status_code == 200
+    sessions = (await client.get(f"{API}/ingest/sessions", headers=account.headers)).json()["items"]
+    assert sessions[0]["status"] == "live"
+    assert sessions[0]["id"] != live_id
+
+
 async def test_meta_advertises_ingest_keys(client: httpx.AsyncClient) -> None:
     caps = (await client.get(f"{API}/meta")).json()["capabilities"]
     assert caps["ingest_keys"] is True

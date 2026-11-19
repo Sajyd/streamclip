@@ -40,10 +40,14 @@ OPEN_SESSION_STATUSES = frozenset(
     }
 )
 
-# Segments land about every 5 min. After ~2 missed segments with no media tick
+# Segments land about every 5 min. After ~2 missed segments with no real media
 # (and no publisher_disconnect hook), treat the live as gone — covers abrupt
 # OBS quits where MediaMTX never delivered runOnNotReady.
+# Stall ticks from the segment loop are not media and must not extend this.
 STALE_MEDIA_AFTER = timedelta(minutes=12)
+# After an admin stop, ignore relay/agent republish long enough for the kick
+# to land. A new OBS publish (edge auth, no dedicated node) is still accepted.
+ADMIN_STOP_HOLD = timedelta(seconds=90)
 
 _SECRET_PREFIX = "sc_live_"  # noqa: S105 - public prefix, not a credential
 _PUBLIC_ID_BYTES = 9  # 12 char urlsafe
@@ -259,6 +263,18 @@ async def open_session_for_publish(
         and existing.ingest_node_id != ingest_node_id
     ):
         existing = None
+    if (
+        ingest_node_id is not None
+        and await admin_stop_hold(
+            session, organization_id=key.organization_id, stream_key_id=key.id
+        )
+    ):
+        # The edge relay re-authenticates on the spot after a kick. Reject that
+        # so OBS stays disconnected. A fresh OBS publish hits the edge (no node).
+        raise PermissionDeniedError(
+            "Ce live a été arrêté par un administrateur.",
+            code="admin_stopped",
+        )
     if existing is not None:
         existing.status = StreamSessionStatus.LIVE
         existing.protocol = protocol
@@ -344,11 +360,18 @@ async def ensure_session_for_publisher(
     if existing is not None:
         if ingest_node_id is not None and existing.ingest_node_id is None:
             existing.ingest_node_id = ingest_node_id
-        if existing.status is StreamSessionStatus.INTERRUPTED:
-            await resume_session(session, existing)
-        else:
             await session.flush()
+        # Do not resume here. Relay polls and stall ticks are not OBS.
+        # publisher_ready / a real segment call resume_session explicitly.
         return existing, False
+
+    if await admin_stop_hold(
+        session, organization_id=key.organization_id, stream_key_id=key.id
+    ):
+        raise PermissionDeniedError(
+            "Ce live a été arrêté par un administrateur.",
+            code="admin_stopped",
+        )
 
     reopened = await reopen_quota_paused_session(
         session,
@@ -368,6 +391,32 @@ async def ensure_session_for_publisher(
         ingest_node_id=ingest_node_id,
     )
     return created, True
+
+
+async def admin_stop_hold(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    stream_key_id: uuid.UUID,
+) -> bool:
+    """True while a relay must not reopen a live an admin just stopped."""
+    latest = (
+        await session.execute(
+            select(StreamSession)
+            .where(
+                StreamSession.organization_id == organization_id,
+                StreamSession.stream_key_id == stream_key_id,
+            )
+            .order_by(StreamSession.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest is None or latest.end_reason is not StreamEndReason.ADMIN_STOPPED:
+        return False
+    if latest.status in OPEN_SESSION_STATUSES or latest.ended_at is None:
+        return False
+    ended = latest.ended_at if latest.ended_at.tzinfo else latest.ended_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - ended < ADMIN_STOP_HOLD
 
 
 async def reopen_quota_paused_session(

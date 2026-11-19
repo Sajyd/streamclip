@@ -3,10 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { stopLiveAction } from "@/app/actions/admin";
 import { StatusBadge } from "@/components/app/admin-analytics";
 import { AdminLivePlayer } from "@/components/app/admin-live-player";
 import { AdminShell } from "@/components/app/admin-shell";
 import { buttonClasses } from "@/components/ui/button";
+import { Form, FormMessage, SubmitButton } from "@/components/ui/form";
 import { Card, Skeleton } from "@/components/ui/primitives";
 import { adminFetch, requireStaff } from "@/lib/admin";
 import { formatDateTime, formatDuration } from "@/lib/format";
@@ -34,15 +36,27 @@ async function LiveDetail({ params }: { params: Props["params"] }) {
     notFound();
   }
   const timeZone = me.user.timezone;
+  const canStop = ["pending", "live", "interrupted", "finalizing"].includes(detail.status);
 
   return (
     <AdminShell
       title={detail.title || "Live sans titre"}
       description={`Journal pipeline · ${detail.owner_email ?? "—"} · ${detail.organization_name}`}
       actions={
-        <Link href="/admin/lives?all=1" className={buttonClasses({ variant: "secondary", size: "sm" })}>
-          Retour aux lives
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {canStop ? (
+            <Form action={stopLiveAction} className="flex flex-wrap items-center gap-2 space-y-0">
+              <input type="hidden" name="live_id" value={detail.id} />
+              <SubmitButton variant="danger" size="sm" pendingLabel="Arrêt…">
+                Arrêter le live
+              </SubmitButton>
+              <FormMessage />
+            </Form>
+          ) : null}
+          <Link href="/admin/lives?all=1" className={buttonClasses({ variant: "secondary", size: "sm" })}>
+            Retour aux lives
+          </Link>
+        </div>
       }
     >
       <AdminLivePlayer

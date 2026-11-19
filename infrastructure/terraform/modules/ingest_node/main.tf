@@ -266,6 +266,25 @@ locals {
       fi
     done
     wait "$FF_PID" 2>/dev/null || echo "relay push ended path=$PATH_NAME" >&2
+    # OBS gone: stop republishing publisher_ready. A stall while the path is
+    # still ready (spot push died) keeps looping.
+    if ! python3 - "$PATH_NAME" <<'PY'
+import json, sys, urllib.request
+name = sys.argv[1]
+try:
+    with urllib.request.urlopen("http://127.0.0.1:9997/v3/paths/list", timeout=2) as resp:
+        data = json.load(resp)
+except Exception:
+    sys.exit(0)
+for item in data.get("items") or []:
+    if item.get("name") == name and item.get("ready"):
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+      echo "relay publisher gone path=$PATH_NAME" >&2
+      exit 0
+    fi
     sleep 2
   done
     RELAY

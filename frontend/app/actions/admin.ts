@@ -27,6 +27,21 @@ export async function suspendUserAction(_previous: FormState, formData: FormData
   return success("Compte suspendu.");
 }
 
+export async function stopLiveAction(_previous: FormState, formData: FormData): Promise<FormState> {
+  const liveId = text(formData, "live_id");
+  if (!USER_ID.test(liveId)) {
+    return { status: "error", message: "Live inconnu." };
+  }
+  const result = await authorized((token) =>
+    api<{ message: string }>(`/admin/lives/${liveId}/stop`, { method: "POST", token }),
+  );
+  if (!result.ok) {
+    return failure(result.error);
+  }
+  refresh();
+  return success(result.data.message || "Live arrêté.");
+}
+
 export async function reactivateUserAction(_previous: FormState, formData: FormData): Promise<FormState> {
   const userId = text(formData, "user_id");
   if (!USER_ID.test(userId)) {

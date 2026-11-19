@@ -788,6 +788,76 @@ async def get_live(
     }
 
 
+async def stop_live(
+    ctx: AppContext,
+    admin: Principal,
+    live_id: uuid.UUID,
+    *,
+    meta: RequestMeta,
+) -> str:
+    """End the session and drop the OBS RTMP publisher on the edge."""
+    from app.models.enums import StreamEndReason
+    from app.models.media import IngestNode, StreamKey
+    from app.services import ingest as ingest_service
+    from app.services import ingest_nodes
+    from app.services.preview_network import kick_obs_publisher
+
+    public_id: str | None = None
+    instance_id: str | None = None
+    async with ctx.db.system_tx() as session:
+        stream = await session.get(StreamSession, live_id, with_for_update=True)
+        if stream is None:
+            raise NotFoundError("Live introuvable.", code="live_not_found")
+        if stream.status not in _LIVE_STATUSES:
+            raise ConflictError("Ce live est déjà terminé.", code="live_not_active")
+        if stream.stream_key_id is not None:
+            key = await session.get(StreamKey, stream.stream_key_id)
+            if key is not None:
+                public_id = key.public_id
+        node = None
+        if stream.ingest_node_id is not None:
+            node = await session.get(IngestNode, stream.ingest_node_id)
+        if node is None:
+            node = await ingest_nodes.get_dedicated_node(session, stream.organization_id)
+        if node is not None and node.instance_id:
+            instance_id = node.instance_id
+        await ingest_service.close_session(
+            session, stream, reason=StreamEndReason.ADMIN_STOPPED
+        )
+        await ingest_nodes.schedule_idle_termination(
+            session, organization_id=stream.organization_id
+        )
+        audit(
+            session,
+            "admin.live_stopped",
+            meta=meta,
+            actor_type=ActorType.ADMIN,
+            actor_user_id=admin.user_id,
+            organization_id=stream.organization_id,
+            target_type="stream_session",
+            target_id=stream.id,
+            details={"public_id": public_id} if public_id else None,
+        )
+
+    kick = (
+        kick_obs_publisher(
+            ctx.settings,
+            public_id=public_id,
+            dedicated_instance_id=instance_id,
+        )
+        if public_id
+        else {"ok": False, "error": "no_public_id"}
+    )
+    disconnected = any(
+        item.get("kicked") for item in (kick.get("results") or []) if isinstance(item, dict)
+    )
+    if disconnected:
+        return "Live arrêté. OBS a été déconnecté."
+    if kick.get("ok"):
+        return "Live arrêté. Le serveur a coupé le flux."
+    return "Live arrêté. La déconnexion OBS n'a pas pu être confirmée."
+
+
 async def list_lives(
     ctx: AppContext,
     *,

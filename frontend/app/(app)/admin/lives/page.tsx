@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { stopLiveAction } from "@/app/actions/admin";
 import { StatusBadge } from "@/components/app/admin-analytics";
 import { AdminShell } from "@/components/app/admin-shell";
 import { buttonClasses } from "@/components/ui/button";
+import { Form, SubmitButton } from "@/components/ui/form";
 import { Card, Skeleton } from "@/components/ui/primitives";
 import { adminFetch, one, requireStaff } from "@/lib/admin";
 import { formatDateTime, formatDuration } from "@/lib/format";
@@ -82,8 +84,9 @@ async function Lives({ searchParams }: { searchParams: SearchParams }) {
         <ul className="space-y-3">
           {items.map((item) => (
             <li key={item.id}>
-              <Link href={`/admin/lives/${item.id}`} className="block">
-                <Card className="p-5 transition hover:border-ink-500">
+              <Card className="p-5 transition hover:border-ink-500">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <Link href={`/admin/lives/${item.id}`} className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="min-w-0 truncate text-sm font-medium text-white">
                       {item.title || "Live sans titre"}
@@ -102,8 +105,17 @@ async function Lives({ searchParams }: { searchParams: SearchParams }) {
                     {formatDuration(Math.floor(item.processed_ms / 1000))} traités ·{" "}
                     {item.clips_count} clip{item.clips_count > 1 ? "s" : ""}
                   </p>
-                </Card>
-              </Link>
+                  </Link>
+                  {activeOnly ? (
+                    <Form action={stopLiveAction} className="space-y-0">
+                      <input type="hidden" name="live_id" value={item.id} />
+                      <SubmitButton variant="danger" size="sm" pendingLabel="Arrêt…">
+                        Arrêter
+                      </SubmitButton>
+                    </Form>
+                  ) : null}
+                </div>
+              </Card>
             </li>
           ))}
         </ul>

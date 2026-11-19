@@ -716,13 +716,20 @@ async def relay_target(
                 rtmp_push_url=None,
                 message=str(exc.message) if hasattr(exc, "message") else "Accès refusé.",
             )
-        stream, opened = await ingest_service.ensure_session_for_publisher(
-            session,
-            key=key,
-            protocol=IngestProtocol.RTMP,
-            remote_ip=None,
-            ingest_node_id=result.node_id,
-        )
+        try:
+            stream, opened = await ingest_service.ensure_session_for_publisher(
+                session,
+                key=key,
+                protocol=IngestProtocol.RTMP,
+                remote_ip=None,
+                ingest_node_id=result.node_id,
+            )
+        except PermissionDeniedError as exc:
+            return IngestRelayTargetOut(
+                status="unavailable",
+                rtmp_push_url=None,
+                message=getattr(exc, "message", None) or "Live arrêté.",
+            )
         if opened:
             from app.tasks.queue import enqueue
 
@@ -845,8 +852,10 @@ async def mediamtx_event(
         if stream is None:
             stream = (await session.execute(stream_query)).scalar_one_or_none()
         event = body.event.lower()
-        if stream is None and event in ("publisher_ready", "start", "segment", "processed", "tick"):
+        if stream is None and event in ("publisher_ready", "start", "segment"):
             # OBS can stay connected after the previous session was closed.
+            # Stall ticks must not open a new live — they fire when the recorder
+            # has no publisher.
             try:
                 stream, opened = await ingest_service.ensure_session_for_publisher(
                     session,
@@ -855,7 +864,9 @@ async def mediamtx_event(
                     remote_ip=body.ip,
                     ingest_node_id=node.id if node is not None else None,
                 )
-            except PermissionDeniedError:
+            except PermissionDeniedError as exc:
+                if getattr(exc, "code", None) == "admin_stopped":
+                    return IngestEventHookOut(message="admin_stopped", stop=True)
                 return IngestEventHookOut(message="no_open_session")
             if opened:
                 from app.tasks.queue import enqueue
@@ -926,11 +937,12 @@ async def mediamtx_event(
                         organization_id=key.organization_id,
                         node_id=node.id if node is not None else stream.ingest_node_id,
                     )
-        elif event in ("processed", "tick") and body.processed_ms:
-            # Heartbeat only — do not bill (quota = analyzed 5-min segments).
-            await ingest_service.resume_session(session, stream)
-            stream.last_media_at = datetime.now(UTC)
-            await session.flush()
+        elif event in ("processed", "tick"):
+            # The segment loop emits this when ffmpeg stalls — including after
+            # OBS has gone. It is not proof of a publisher, so it must not
+            # resume an interrupted live or refresh last_media_at (that kept
+            # "En direct" up forever and blocked the stale closer).
+            pass
         elif event in ("lost", "signal_lost"):
             await ingest_service.close_session(session, stream, reason=StreamEndReason.SIGNAL_LOST)
             await ingest_nodes.schedule_idle_termination(
@@ -983,6 +995,12 @@ async def segment_gate(
         ent = await entitlements.get_entitlement(session, key.organization_id)
         remaining = ent.quota.remaining_ms
         if ent.quota.exhausted or remaining <= 0:
+            return SegmentGateOut(stop=True, record_seconds=0)
+        if await ingest_service.admin_stop_hold(
+            session,
+            organization_id=key.organization_id,
+            stream_key_id=key.id,
+        ):
             return SegmentGateOut(stop=True, record_seconds=0)
         # The spot polls this while OBS is still up. A plan bought after the
         # quota close must resume the same live, not wait for a new publish.

@@ -232,6 +232,137 @@ def _find_edge_instance(settings: Settings) -> dict[str, Any] | None:
     }
 
 
+def _kick_script(public_id: str) -> str:
+    """Drop the OBS publisher and the relay/recorder for one stream key.
+
+    Runs on the box. MediaMTX API is localhost-only; kicking the RTMP publish
+    connection is what makes OBS show "disconnected".
+    """
+    import json
+
+    return f"""python3 - <<'PY'
+import json, os, signal, urllib.request
+PUBLIC_ID = {json.dumps(public_id)}
+PREFIX = "live/" + PUBLIC_ID
+
+def get(url):
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            return json.load(resp)
+    except Exception:
+        return {{}}
+
+def post(url, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        urllib.request.urlopen(req, timeout=3).read()
+        return True
+    except Exception:
+        return False
+
+kicked = 0
+conns = get("http://127.0.0.1:9997/v3/rtmpconns/list")
+for item in conns.get("items") or []:
+    path = str(item.get("path") or "")
+    if path == PREFIX or path.startswith(PREFIX + "/"):
+        if post("http://127.0.0.1:9997/v3/rtmpconns/kick/" + str(item.get("id") or "")):
+            kicked += 1
+paths = get("http://127.0.0.1:9997/v3/paths/list")
+for item in paths.get("items") or []:
+    name = str(item.get("name") or "")
+    if name == PREFIX or name.startswith(PREFIX + "/"):
+        post("http://127.0.0.1:8080/stop", {{"path": name}})
+me = os.getpid()
+for pid in os.listdir("/proc"):
+    if not pid.isdigit() or int(pid) == me:
+        continue
+    try:
+        cmd = open("/proc/" + pid + "/cmdline", "rb").read().replace(b"\\0", b" ").decode(errors="ignore")
+    except OSError:
+        continue
+    if PUBLIC_ID not in cmd:
+        continue
+    if "ffmpeg" in cmd or "streamclip-edge-relay" in cmd or "streamclip-segment-loop" in cmd:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except OSError:
+            pass
+print("kicked=" + str(kicked))
+PY"""
+
+
+def _ssm_wait(settings: Settings, *, command_id: str, instance_id: str, timeout_s: float = 12) -> dict[str, Any]:
+    ssm = _ssm(settings)
+    deadline = time.time() + timeout_s
+    last: dict[str, Any] = {"Status": "Pending"}
+    while time.time() < deadline:
+        try:
+            last = ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
+        except Exception:
+            time.sleep(1)
+            continue
+        if last.get("Status") in ("Success", "Failed", "Cancelled", "TimedOut"):
+            return last
+        time.sleep(1)
+    return last
+
+
+def kick_obs_publisher(
+    settings: Settings,
+    *,
+    public_id: str,
+    dedicated_instance_id: str | None = None,
+) -> dict[str, Any]:
+    """Kick the RTMP publisher on the edge (OBS) and stop the dedicated recorder."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", public_id or ""):
+        return {"ok": False, "error": "invalid_public_id"}
+    if not settings.ingest_launcher_configured:
+        return {"ok": False, "skipped": "launcher_unconfigured"}
+    targets: list[str] = []
+    edge = _find_edge_instance(settings)
+    if edge and edge.get("instance_id"):
+        targets.append(str(edge["instance_id"]))
+    if dedicated_instance_id and dedicated_instance_id not in targets:
+        targets.append(dedicated_instance_id)
+    if not targets:
+        return {"ok": False, "error": "no_instance"}
+    script = _kick_script(public_id)
+    results: list[dict[str, Any]] = []
+    ok = False
+    for instance_id in targets:
+        try:
+            sent = _ssm_run(settings, instance_id=instance_id, commands=[script])
+            command_id = sent.get("command_id")
+            invocation = (
+                _ssm_wait(settings, command_id=str(command_id), instance_id=instance_id)
+                if command_id
+                else {"Status": "Failed"}
+            )
+            status = invocation.get("Status")
+            output = (invocation.get("StandardOutputContent") or "")[:500]
+            kicked = "kicked=" in output and not output.strip().endswith("kicked=0")
+            # Success with kicked=0 still dropped local ffmpeg/relay processes.
+            if status == "Success":
+                ok = True
+            results.append(
+                {
+                    "instance_id": instance_id,
+                    "status": status,
+                    "kicked": kicked,
+                    "output": output.strip(),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("preview.kick_failed", instance_id=instance_id, error=str(exc))
+            results.append({"instance_id": instance_id, "status": "error", "error": str(exc)})
+    return {"ok": ok, "results": results}
+
+
 def _ssm_run(settings: Settings, *, instance_id: str, commands: list[str]) -> dict[str, Any]:
     ssm = _ssm(settings)
     resp = ssm.send_command(
