@@ -522,6 +522,15 @@ def stop_path(path: str) -> dict:
     return {"ok": True, "path": _public_path_label(clean), "killed": killed}
 
 
+def _asr_configured() -> bool:
+    provider = (os.environ.get("ASR_PROVIDER") or "bedrock").strip().lower()
+    if provider in ("", "none"):
+        return False
+    if provider in ("bedrock", "voxtral"):
+        return True
+    return bool((os.environ.get("ASR_API_KEY") or "").strip())
+
+
 def _analyze_stats() -> dict:
     with _analyze_lock:
         return {
@@ -529,10 +538,7 @@ def _analyze_stats() -> dict:
             "inflight": _analyze_inflight,
             "done": _analyze_done,
             "failed": _analyze_failed,
-            "asr_configured": bool(
-                (os.environ.get("ASR_PROVIDER") or "").strip().lower() not in ("", "none")
-                and (os.environ.get("ASR_API_KEY") or "").strip()
-            ),
+            "asr_configured": _asr_configured(),
             "bedrock_model": (os.environ.get("BEDROCK_MODEL") or "us.openai.gpt-6-luna"),
         }
 

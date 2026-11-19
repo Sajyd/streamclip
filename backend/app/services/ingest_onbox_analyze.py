@@ -2,7 +2,7 @@
 """On-box 5-min segment analysis for the dedicated :8080 agent.
 
 Runs on the EC2 spot with stdlib + boto3 (installed at boot):
-  frames every 5s → ASR (Groq/OpenAI-compatible) → Bedrock GPT-6 Luna →
+  keyframes → Bedrock Voxtral Small → Bedrock GPT-6 Luna →
   POST moments to the API persist hook.
 
 Deployed as /usr/local/bin/streamclip_onbox_analyze.py alongside the agent.
@@ -21,7 +21,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 # One still every 10s (≤24 per 5-min window). Keyframe-only so the decoder
 # does not fight the RTMP reader on a 2 vCPU box.
@@ -34,6 +33,7 @@ MAX_MOMENT_MS = 60_000
 TARGET_MOMENT_MS = 60_000
 DEFAULT_MODEL = "us.openai.gpt-6-luna"
 DEFAULT_BEDROCK_REGION = "us-east-1"
+DEFAULT_ASR_MODEL = "mistral.voxtral-small-24b-2507"
 
 SYSTEM_PROMPT = """Tu analyses un extrait de live de 5 minutes (images + transcription).
 Repère les moments viraux pour Shorts/TikTok/Reels.
@@ -235,63 +235,69 @@ def extract_audio_wav(video: Path, wav: Path) -> bool:
     return True
 
 
-def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
-    """OpenAI-compatible ASR (Groq whisper). Returns (text, words)."""
-    provider = (os.environ.get("ASR_PROVIDER") or "none").strip().lower()
-    api_key = (os.environ.get("ASR_API_KEY") or "").strip()
-    if provider in ("", "none") or not api_key:
-        _log("asr_skipped provider_or_key_missing")
-        return "", []
-    base = (os.environ.get("ASR_BASE_URL") or "https://api.groq.com/openai/v1").rstrip("/")
-    model = (os.environ.get("ASR_MODEL") or "whisper-large-v3-turbo").strip()
-    boundary = f"----streamclip{uuid4().hex}"
-    body = (
-        (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
-            f"Content-Type: audio/wav\r\n\r\n"
-        ).encode()
-        + audio
-        + (
-            f"\r\n--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n'
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="timestamp_granularities[]"\r\n\r\nword\r\n'
-            f"--{boundary}--\r\n"
-        ).encode()
-    )
-    req = urllib.request.Request(
-        f"{base}/audio/transcriptions",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:  # noqa: S310
-            payload = json.loads(resp.read().decode())
-    except Exception as exc:  # noqa: BLE001
-        _log(f"asr_fail err={exc}")
-        return "", []
-    text = str(payload.get("text") or "")
+def _wav_duration_ms(audio: bytes) -> int:
+    # ffmpeg pcm_s16le 16 kHz mono: 32 bytes per millisecond after a 44-byte header.
+    return max(0, len(audio) - 44) // 32
+
+
+def _timed_words(text: str, duration_ms: int) -> list[dict[str, Any]]:
+    """Voxtral returns plain text. Spread words across the clip so Luna can attach them."""
+    parts = [part for part in text.split() if part]
+    if not parts or duration_ms <= 0:
+        return []
+    weights = [max(1, len(part)) for part in parts]
+    total = sum(weights)
+    cursor = 0
     words: list[dict[str, Any]] = []
-    for w in payload.get("words") or []:
-        try:
-            start_s = float(w.get("start", 0))
-            end_s = float(w.get("end", start_s))
-            words.append(
+    for part, weight in zip(parts, weights):
+        end = min(duration_ms, cursor + max(1, duration_ms * weight // total))
+        words.append({"text": part, "start_ms": cursor, "end_ms": max(cursor + 1, end)})
+        cursor = end
+    words[-1]["end_ms"] = max(words[-1]["start_ms"] + 1, duration_ms)
+    return words
+
+
+def transcribe(audio: bytes) -> tuple[str, list[dict[str, Any]]]:
+    """Bedrock Voxtral Small via the instance role. Returns (text, approximate words)."""
+    provider = (os.environ.get("ASR_PROVIDER") or "bedrock").strip().lower()
+    if provider in ("", "none"):
+        _log("asr_skipped provider_none")
+        return "", []
+    model = (os.environ.get("ASR_MODEL") or DEFAULT_ASR_MODEL).strip()
+    if not model.startswith("mistral.voxtral"):
+        model = DEFAULT_ASR_MODEL
+    region = (os.environ.get("BEDROCK_REGION") or DEFAULT_BEDROCK_REGION).strip()
+    try:
+        import boto3  # type: ignore[import-untyped]
+
+        client = boto3.client("bedrock-runtime", region_name=region)
+        response = client.converse(
+            modelId=model,
+            messages=[
                 {
-                    "text": str(w.get("word") or w.get("text") or ""),
-                    "start_ms": int(start_s * 1000),
-                    "end_ms": int(end_s * 1000),
+                    "role": "user",
+                    "content": [
+                        {"audio": {"format": "wav", "source": {"bytes": audio}}},
+                        {
+                            "text": (
+                                "Transcris cet audio verbatim. "
+                                "Reponds uniquement avec le texte dit."
+                            )
+                        },
+                    ],
                 }
-            )
-        except (TypeError, ValueError):
-            continue
+            ],
+            inferenceConfig={"maxTokens": 4096},
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"asr_fail model={model} err={exc}")
+        return "", []
+    parts = response.get("output", {}).get("message", {}).get("content", [])
+    text = " ".join(
+        part.get("text", "") for part in parts if isinstance(part, dict) and "text" in part
+    ).strip()
+    words = _timed_words(text, _wav_duration_ms(audio))
+    _log(f"asr_ok model={model} chars={len(text)} words={len(words)}")
     return text, words
 
 

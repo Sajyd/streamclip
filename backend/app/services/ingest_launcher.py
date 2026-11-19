@@ -167,12 +167,12 @@ class AwsSpotLauncher:
             "AWS_REGION": (
                 settings.ingest_ec2_region or settings.s3_region or "eu-north-1"
             ),
-            "ASR_PROVIDER": (settings.asr_provider or "none").strip(),
+            "ASR_PROVIDER": (settings.asr_provider or "bedrock").strip(),
             "ASR_API_KEY": (
                 settings.asr_api_key.get_secret_value() if settings.asr_api_key else ""
             ),
-            "ASR_BASE_URL": (settings.asr_base_url or "https://api.groq.com/openai/v1").strip(),
-            "ASR_MODEL": (settings.asr_model or "whisper-large-v3-turbo").strip(),
+            "ASR_BASE_URL": (settings.asr_base_url or "").strip(),
+            "ASR_MODEL": (settings.asr_model or "mistral.voxtral-small-24b-2507").strip(),
             "BEDROCK_REGION": (settings.bedrock_region or "us-east-1").strip(),
             "BEDROCK_MODEL": (settings.bedrock_model or "us.openai.gpt-6-luna").strip(),
             "AUTH_HTTP_ADDRESS": auth_with_secret,

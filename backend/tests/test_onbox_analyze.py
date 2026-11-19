@@ -99,3 +99,33 @@ def test_analyze_posts_frames_to_luna(monkeypatch, tmp_path: Path) -> None:
     assert payload["frames"] == 1
     assert payload["provider"] == "bedrock"
     assert payload["posted"] is True
+
+
+def test_transcribe_calls_voxtral_small(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class _Client:
+        def converse(self, **kwargs):
+            seen["model"] = kwargs["modelId"]
+            seen["audio"] = kwargs["messages"][0]["content"][0]["audio"]["source"]["bytes"]
+            return {"output": {"message": {"content": [{"text": "salut tout le monde"}]}}}
+
+    monkeypatch.setenv("ASR_PROVIDER", "bedrock")
+    monkeypatch.setenv("ASR_MODEL", "whisper-large-v3-turbo")
+    monkeypatch.setenv("BEDROCK_REGION", "us-east-1")
+    monkeypatch.setitem(__import__("sys").modules, "boto3", type("Boto", (), {
+        "client": staticmethod(lambda *_a, **_k: _Client())
+    }))
+
+    text, words = onbox.transcribe(b"RIFFxxxxWAVEfmt " + b"\x00" * 44 + b"\x00\x01" * 16000)
+
+    assert seen["model"] == onbox.DEFAULT_ASR_MODEL
+    assert text == "salut tout le monde"
+    assert [word["text"] for word in words] == ["salut", "tout", "le", "monde"]
+    assert words[0]["start_ms"] == 0
+    assert words[-1]["end_ms"] > words[0]["start_ms"]
+
+
+def test_transcribe_skips_when_provider_is_none(monkeypatch) -> None:
+    monkeypatch.setenv("ASR_PROVIDER", "none")
+    assert onbox.transcribe(b"abc") == ("", [])

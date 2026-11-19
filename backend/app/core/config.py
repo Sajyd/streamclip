@@ -111,11 +111,12 @@ class Settings(BaseSettings):
     ingest_rtmps_url: str | None = None
 
     # --- ASR / transcription ------------------------------------------------
-    # none | console | openai_compatible (Groq/OpenAI-compatible HTTP).
-    asr_provider: str = "none"
+    # On the spot: bedrock (Voxtral Small, instance role) | none.
+    # API leftovers: none | console | openai_compatible.
+    asr_provider: str = "bedrock"
     asr_api_key: SecretStr | None = None
     asr_base_url: str = "https://api.groq.com/openai/v1"
-    asr_model: str = "whisper-large-v3-turbo"
+    asr_model: str = "mistral.voxtral-small-24b-2507"
 
     # --- Bedrock multimodal (OpenAI GPT-6 Luna) -----------------------------
     # Luna is served via cross-Region inference on bedrock-runtime (US profile).
